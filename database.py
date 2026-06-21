@@ -5,8 +5,8 @@
 import json
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, List
-from config import DB_FILE, USERS_FILE, DEFAULT_YEAR, CONQUERED_FILE
+from typing import Optional, Dict, List
+from config import DB_FILE, USERS_FILE, DEFAULT_YEAR, CONQUERED_FILE, WIPE_FILE
 
 
 def _load(path: str) -> dict:
@@ -38,6 +38,8 @@ def get_db() -> dict:
         db["registrations"] = {}
     if "reg_message_id" not in db:
         db["reg_message_id"] = None
+    if "reg_open" not in db:
+        db["reg_open"] = True
     return db
 
 
@@ -65,6 +67,18 @@ def set_reg_message_id(msg_id: Optional[int]):
     save_db(db)
 
 
+def is_registration_open() -> bool:
+    """Проверить открыта ли регистрация."""
+    return get_db().get("reg_open", True)
+
+
+def set_registration_open(state: bool):
+    """Открыть или закрыть регистрацию."""
+    db = get_db()
+    db["reg_open"] = state
+    save_db(db)
+
+
 def get_registrations() -> dict:
     return get_db().get("registrations", {})
 
@@ -84,13 +98,8 @@ def register_slot(
     full_name: str,
     slot_info: dict
 ):
-    """
-    Зарегистрировать слот.
-    Автоматически обновляет users.json если пользователь там есть.
-    """
     db = get_db()
 
-    # Если username или full_name пустые — попробуем взять из users.json
     if not username or not full_name:
         users_db = _load(USERS_FILE)
         user_data = users_db.get(str(user_id), {})
@@ -110,31 +119,28 @@ def register_slot(
         "registered_at": datetime.now().isoformat()
     }
     save_db(db)
-
-    # Также обновляем users.json — сохраняем актуальные данные
     _update_user_in_db(user_id, username, full_name)
 
 
 def _update_user_in_db(user_id: int, username: str, full_name: str):
-    """Обновить данные пользователя в users.json при регистрации."""
     if not username and not full_name:
         return
     users_db = _load(USERS_FILE)
     uid = str(user_id)
+    now = datetime.now().isoformat()
     if uid in users_db:
         if username:
             users_db[uid]["username"] = username
         if full_name:
             users_db[uid]["full_name"] = full_name
-        users_db[uid]["last_seen"] = datetime.now().isoformat()
+        users_db[uid]["last_seen"] = now
     else:
-        # Создаём запись если пользователь обошёл /start
         users_db[uid] = {
             "user_id": user_id,
             "username": username,
             "full_name": full_name or str(user_id),
-            "first_seen": datetime.now().isoformat(),
-            "last_seen": datetime.now().isoformat(),
+            "first_seen": now,
+            "last_seen": now,
             "relocations": 0,
         }
     _save(USERS_FILE, users_db)
@@ -155,8 +161,27 @@ def unregister_user(user_id: int) -> Optional[dict]:
     return None
 
 
+def wipe_all_registrations() -> int:
+    """
+    Сбросить ВСЕ регистрации.
+    Возвращает количество удалённых записей.
+    """
+    db = get_db()
+    count = len(db["registrations"])
+    db["registrations"] = {}
+    db["reg_message_id"] = None
+    save_db(db)
+
+    # Также сбрасываем счётчик пересадок у всех
+    users_db = _load(USERS_FILE)
+    for uid in users_db:
+        users_db[uid]["relocations"] = 0
+    _save(USERS_FILE, users_db)
+
+    return count
+
+
 def find_slot_by_name(name: str) -> Optional[tuple]:
-    """Найти зарегистрированный слот по названию."""
     regs = get_registrations()
     name_lower = name.strip().lower()
     for slot_key, reg in regs.items():
@@ -180,7 +205,6 @@ def _save_conquered(data: dict):
 
 
 def conquer_slot(slot_key: str, slot_name: str, slot_flag: str, reason: str = ""):
-    """Пометить слот как завоёванный."""
     data = _load_conquered()
     data[slot_key] = {
         "slot_name": slot_name,
@@ -192,7 +216,6 @@ def conquer_slot(slot_key: str, slot_name: str, slot_flag: str, reason: str = ""
 
 
 def unconquer_slot(slot_key: str) -> bool:
-    """Снять метку завоёванного."""
     data = _load_conquered()
     if slot_key in data:
         del data[slot_key]
@@ -202,26 +225,68 @@ def unconquer_slot(slot_key: str) -> bool:
 
 
 def is_slot_conquered(slot_key: str) -> bool:
-    """Проверить завоёван ли слот."""
     return slot_key in _load_conquered()
 
 
 def get_conquered_slots() -> dict:
-    """Получить все завоёванные слоты."""
     return _load_conquered()
 
 
 def find_conquered_by_name(name: str) -> Optional[tuple]:
-    """Найти завоёванный слот по названию."""
     data = _load_conquered()
     name_lower = name.strip().lower()
     for slot_key, info in data.items():
         if info.get("slot_name", "").lower() == name_lower:
             return (slot_key, info)
-        # Частичное совпадение
         if name_lower in info.get("slot_name", "").lower():
             return (slot_key, info)
     return None
+
+
+# ===================== ВАЙП ПЛАНИРОВЩИК =====================
+
+def get_wipe_data() -> dict:
+    return _load(WIPE_FILE)
+
+
+def save_wipe_data(data: dict):
+    _save(WIPE_FILE, data)
+
+
+def set_planned_wipe(dt_str: str, year: int):
+    """Сохранить запланированный вайп."""
+    data = {
+        "planned_at": dt_str,
+        "year": year,
+        "notified": False,
+        "executed": False,
+    }
+    save_wipe_data(data)
+
+
+def get_planned_wipe() -> Optional[dict]:
+    data = get_wipe_data()
+    if not data or data.get("executed"):
+        return None
+    return data
+
+
+def mark_wipe_executed():
+    data = get_wipe_data()
+    if data:
+        data["executed"] = True
+        save_wipe_data(data)
+
+
+def mark_wipe_notified():
+    data = get_wipe_data()
+    if data:
+        data["notified"] = True
+        save_wipe_data(data)
+
+
+def cancel_wipe():
+    save_wipe_data({})
 
 
 # ===================== БАЗА ПОЛЬЗОВАТЕЛЕЙ =====================
@@ -235,7 +300,6 @@ def save_users_db(db: dict):
 
 
 def register_user_start(user_id: int, username: str, full_name: str):
-    """Зарегистрировать/обновить пользователя при /start."""
     db = get_users_db()
     uid = str(user_id)
     now = datetime.now().isoformat()
@@ -250,22 +314,15 @@ def register_user_start(user_id: int, username: str, full_name: str):
             "relocations": 0,
         }
     else:
-        # Обновляем актуальные данные
         db[uid]["username"] = username
         db[uid]["full_name"] = full_name
         db[uid]["last_seen"] = now
 
     _save(USERS_FILE, db)
-
-    # Также обновляем username/full_name в активной регистрации если есть
     _sync_registration_username(user_id, username, full_name)
 
 
 def _sync_registration_username(user_id: int, username: str, full_name: str):
-    """
-    Синхронизировать username в активной регистрации.
-    Решает проблему когда пользователь сменил username после регистрации.
-    """
     db = get_db()
     changed = False
     for slot_key, reg in db["registrations"].items():
@@ -282,8 +339,7 @@ def _sync_registration_username(user_id: int, username: str, full_name: str):
 
 
 def get_user_data(user_id: int) -> Optional[dict]:
-    db = get_users_db()
-    return db.get(str(user_id))
+    return get_users_db().get(str(user_id))
 
 
 def get_user_relocations(user_id: int) -> int:
@@ -295,7 +351,6 @@ def increment_relocations(user_id: int):
     db = get_users_db()
     uid = str(user_id)
     if uid not in db:
-        # Создаём запись если вдруг нет
         db[uid] = {
             "user_id": user_id,
             "username": "",
@@ -310,8 +365,7 @@ def increment_relocations(user_id: int):
 
 
 def get_all_users() -> List[dict]:
-    db = get_users_db()
-    return list(db.values())
+    return list(get_users_db().values())
 
 
 def get_user_by_username(username: str) -> Optional[dict]:
