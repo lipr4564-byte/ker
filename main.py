@@ -28,6 +28,7 @@ from database import (
 from start import router as start_router
 from registration import router as reg_router, update_reg_message
 from admin import router as admin_router
+from wipe import router as wipe_router, wipe_scheduler   # <-- НОВОЕ
 from logger import log, send_log
 
 logging.basicConfig(
@@ -96,6 +97,11 @@ async def on_startup(bot: Bot):
     os.makedirs("data", exist_ok=True)
     year = get_current_year()
     await update_reg_message(bot, year)
+
+    # Запускаем планировщик вайпа (если настроено)
+    asyncio.create_task(wipe_scheduler(bot))
+    log.info("Планировщик вайпа запущен")
+
     me = await bot.get_me()
     log.info(f"Бот @{me.username} запущен успешно!")
 
@@ -113,6 +119,7 @@ async def main():
 
     dp.include_router(leave_router)
     dp.include_router(admin_router)
+    dp.include_router(wipe_router)          # <-- НОВОЕ
     dp.include_router(start_router)
     dp.include_router(reg_router)
 
