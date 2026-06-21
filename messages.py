@@ -14,11 +14,21 @@ from premium_emoji import ce
 
 
 def format_user_mention(reg: dict) -> str:
-    if reg.get("username"):
-        return f"@{escape(reg['username'])}"
-    if reg.get("full_name"):
-        return escape(reg["full_name"])
-    return f"#{reg.get('user_id', '?')}"
+    """Форматировать упоминание пользователя"""
+    username = reg.get("username")
+    full_name = reg.get("full_name")
+    user_id = reg.get("user_id")
+    
+    # Если есть username, это лучший вариант
+    if username and username.strip():
+        return f"@{escape(username)}"
+    
+    # Если есть полное имя, используем его
+    if full_name and full_name.strip():
+        return escape(full_name)
+    
+    # В крайнем случае показываем ID с префиксом
+    return f"Пользователь #{user_id}" if user_id else "#?"
 
 
 def _build_section_lines(slots: List[dict], regs: dict, data_year: int) -> str:
@@ -49,7 +59,6 @@ def build_reg_message(display_year: int = None) -> str:
 
     countries = get_all_countries(data_year)
     superpowers = get_superpowers(data_year)
-    # Объединяем страны и сверхдержавы в одну секцию
     all_countries = countries + superpowers
     mo_vice = get_mo(data_year) + get_vice(data_year)
     pmcs = get_pmcs(data_year)
