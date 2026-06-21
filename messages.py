@@ -76,12 +76,33 @@ def build_reg_message(display_year: int = None) -> str:
     all_countries = countries + superpowers
     mo_vice = get_mo(data_year) + get_vice(data_year)
     pmcs = get_pmcs(data_year)
-    terror_other = get_terror(data_year) + get_other(data_year)
+    terror_list = get_terror(data_year)
+    other_list = get_other(data_year)
+    terror_other_predefined = terror_list + other_list
 
     countries_text = _build_section_lines(all_countries, regs, data_year)
     mo_vice_text = _build_section_lines(mo_vice, regs, data_year)
     pmc_text = _build_section_lines(pmcs, regs, data_year)
-    terror_text = _build_section_lines(terror_other, regs, data_year)
+    terror_text = _build_section_lines(terror_other_predefined, regs, data_year)
+
+    # ====== ВАЖНО: добавляем кастомные иные движения, не попавшие в предустановленные списки ======
+    predefined_other_keys = {s["key"] for s in other_list}
+    custom_others = {
+        k: v for k, v in regs.items()
+        if v.get("slot_type") == "other" and k not in predefined_other_keys
+    }
+    if custom_others:
+        custom_lines = []
+        for key, reg in custom_others.items():
+            mention = format_user_mention(reg)
+            flag = reg.get("slot_flag", "🏳️")
+            name = escape(reg.get("slot_name", "?"))
+            custom_lines.append(f"{flag} {name} — {mention}")
+        extra_text = "\n".join(custom_lines)
+        if terror_text == "Свободны":
+            terror_text = extra_text
+        else:
+            terror_text = terror_text + "\n" + extra_text
 
     staff_lines = [
         f"{escape(role)} — {uname}"
