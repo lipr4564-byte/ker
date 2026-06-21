@@ -4,7 +4,7 @@
 
 from html import escape
 from typing import List
-from database import get_registrations, get_current_year
+from database import get_registrations, get_current_year, get_user_data
 from data_loader import (
     get_all_countries, get_mo, get_vice, get_pmcs,
     get_terror, get_other, get_superpowers, get_data_year,
@@ -14,20 +14,34 @@ from premium_emoji import ce
 
 
 def format_user_mention(reg: dict) -> str:
-    """Форматировать упоминание пользователя"""
+    """
+    Форматировать упоминание пользователя.
+    Приоритет: username, full_name, данные из users.json, заглушка.
+    """
     username = reg.get("username")
     full_name = reg.get("full_name")
     user_id = reg.get("user_id")
-    
-    # Если есть username, это лучший вариант
+
+    # 1. username из регистрации
     if username and username.strip():
         return f"@{escape(username)}"
-    
-    # Если есть полное имя, используем его
+
+    # 2. полное имя из регистрации
     if full_name and full_name.strip():
         return escape(full_name)
-    
-    # В крайнем случае показываем ID с префиксом
+
+    # 3. Если есть user_id – попробуем данные из базы пользователей
+    if user_id:
+        user_data = get_user_data(user_id)
+        if user_data:
+            uname = user_data.get("username")
+            fname = user_data.get("full_name")
+            if uname and uname.strip():
+                return f"@{escape(uname)}"
+            if fname and fname.strip():
+                return escape(fname)
+
+    # 4. Заглушка с ID
     return f"Пользователь #{user_id}" if user_id else "#?"
 
 
