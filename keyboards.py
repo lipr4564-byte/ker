@@ -2,6 +2,7 @@
 Клавиатуры (inline кнопки) для бота
 """
 
+import uuid
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database import is_slot_occupied, get_current_year, is_slot_conquered
@@ -11,7 +12,9 @@ from data_loader import (
 )
 from config import DATA_YEARS
 from premium_emoji import btn
-import uuid
+
+
+# ===================== ГЛАВНОЕ МЕНЮ =====================
 
 def main_menu_kb(has_registration: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -23,6 +26,9 @@ def main_menu_kb(has_registration: bool = False) -> InlineKeyboardMarkup:
         builder.row(btn("Сняться со страны", "unregister_start", "🚪"))
     return builder.as_markup()
 
+
+# ===================== РЕГИСТРАЦИЯ — ТИП =====================
+
 def reg_type_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(btn("Страна", "type_country", "🏳️"))
@@ -33,6 +39,7 @@ def reg_type_kb() -> InlineKeyboardMarkup:
     builder.row(btn("Назад", "back_main", "🔙"))
     return builder.as_markup()
 
+
 def mo_vice_choice_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(btn("Министерство обороны", "type_mo", "⚔️"))
@@ -40,110 +47,169 @@ def mo_vice_choice_kb() -> InlineKeyboardMarkup:
     builder.row(btn("Назад", "back_reg_type", "🔙"))
     return builder.as_markup()
 
-def _slot_buttons(builder: InlineKeyboardBuilder, slots: list, back_cb: str, storage: dict):
+
+# ===================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ КНОПОК СЛОТОВ =====================
+
+def _slot_buttons(
+    builder: InlineKeyboardBuilder,
+    slots: list,
+    back_cb: str,
+    storage: dict
+) -> None:
+    """
+    Добавить кнопки свободных слотов в builder.
+    storage: dict куда сохраняются rid -> slot_key
+    """
     for slot in slots:
-        if not is_slot_occupied(slot["key"]) and not is_slot_conquered(slot["key"]):
-            rid = str(uuid.uuid4())[:8]
-            storage[rid] = slot["key"]
-            builder.row(btn(
-                f"{slot['flag']} {slot['name']}",
-                f"select_{rid}",
-            ))
+        key = slot.get("key", "")
+        if not key:
+            continue
+        # Доп. проверка на случай если слот занялся пока строится кнопка
+        if is_slot_occupied(key) or is_slot_conquered(key):
+            continue
+        rid = str(uuid.uuid4())[:8]
+        storage[rid] = key
+        label = f"{slot.get('flag', '🏳️')} {slot.get('name', '?')}"
+        builder.row(btn(label, f"select_{rid}"))
+
     builder.row(btn("Назад", back_cb, "🔙"))
 
+
+# ===================== КЛАВИАТУРЫ СЛОТОВ =====================
+
 def interesting_countries_kb(year: int, storage: dict) -> InlineKeyboardMarkup:
+    """Кнопки интересных стран для выбора."""
     builder = InlineKeyboardBuilder()
     interesting = get_interesting_countries(year)
-    free = [c for c in interesting
-            if not is_slot_occupied(c["key"]) and not is_slot_conquered(c["key"])]
+    # Показываем только свободные, не более 8
+    free = [
+        c for c in interesting
+        if not is_slot_occupied(c["key"]) and not is_slot_conquered(c["key"])
+    ]
     _slot_buttons(builder, free[:8], "back_reg_type", storage)
     return builder.as_markup()
 
+
 def pmc_kb(year: int, storage: dict) -> InlineKeyboardMarkup:
+    """Кнопки свободных ЧВК."""
     builder = InlineKeyboardBuilder()
-    free = [p for p in get_pmcs(year)
-            if not is_slot_occupied(p["key"]) and not is_slot_conquered(p["key"])]
+    free = [
+        p for p in get_pmcs(year)
+        if not is_slot_occupied(p["key"]) and not is_slot_conquered(p["key"])
+    ]
     _slot_buttons(builder, free, "back_reg_type", storage)
     return builder.as_markup()
+
 
 def mo_kb(year: int, storage: dict) -> InlineKeyboardMarkup:
+    """Кнопки свободных МО."""
     builder = InlineKeyboardBuilder()
-    free = [m for m in get_mo(year)
-            if not is_slot_occupied(m["key"]) and not is_slot_conquered(m["key"])]
+    free = [
+        m for m in get_mo(year)
+        if not is_slot_occupied(m["key"]) and not is_slot_conquered(m["key"])
+    ]
     _slot_buttons(builder, free, "back_mo_vice", storage)
     return builder.as_markup()
+
 
 def vice_kb(year: int, storage: dict) -> InlineKeyboardMarkup:
+    """Кнопки свободных Вице."""
     builder = InlineKeyboardBuilder()
-    free = [v for v in get_vice(year)
-            if not is_slot_occupied(v["key"]) and not is_slot_conquered(v["key"])]
+    free = [
+        v for v in get_vice(year)
+        if not is_slot_occupied(v["key"]) and not is_slot_conquered(v["key"])
+    ]
     _slot_buttons(builder, free, "back_mo_vice", storage)
     return builder.as_markup()
 
+
 def terror_kb(year: int, storage: dict) -> InlineKeyboardMarkup:
+    """Кнопки свободных террористических организаций."""
     builder = InlineKeyboardBuilder()
-    free = [t for t in get_terror(year)
-            if not is_slot_occupied(t["key"]) and not is_slot_conquered(t["key"])]
+    free = [
+        t for t in get_terror(year)
+        if not is_slot_occupied(t["key"]) and not is_slot_conquered(t["key"])
+    ]
     _slot_buttons(builder, free, "back_reg_type", storage)
     return builder.as_markup()
+
 
 def other_kb(year: int, storage: dict) -> InlineKeyboardMarkup:
+    """Кнопки свободных иных движений."""
     builder = InlineKeyboardBuilder()
-    free = [o for o in get_other(year)
-            if not is_slot_occupied(o["key"]) and not is_slot_conquered(o["key"])]
+    free = [
+        o for o in get_other(year)
+        if not is_slot_occupied(o["key"]) and not is_slot_conquered(o["key"])
+    ]
     _slot_buttons(builder, free, "back_reg_type", storage)
     return builder.as_markup()
 
+
+# ===================== ПОДТВЕРЖДЕНИЕ =====================
+
 def confirm_kb(action: str, confirm_id: str) -> InlineKeyboardMarkup:
+    """Кнопки Да/Нет для подтверждения действия."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        btn("Да", f"confirm_{action}_{confirm_id}", "✅"),
-        btn("Нет", "cancel_confirm", "❌"),
+        btn("✅ Да", f"confirm_{action}_{confirm_id}"),
+        btn("❌ Нет", "cancel_confirm"),
     )
     return builder.as_markup()
 
+
 def unregister_confirm_kb(rid: str) -> InlineKeyboardMarkup:
+    """Кнопки подтверждения снятия с позиции."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        btn("Да, сняться", f"unregister_{rid}", "✅"),
-        btn("Нет", "back_main", "❌"),
+        btn("✅ Да, сняться", f"unregister_{rid}"),
+        btn("❌ Нет", "back_main"),
     )
     return builder.as_markup()
+
+
+# ===================== ОДОБРЕНИЕ/ОТКЛОНЕНИЕ =====================
+
+def approve_deny_kb(request_id: str) -> InlineKeyboardMarkup:
+    """Кнопки одобрить/отклонить для владельца."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        btn("✅ Разрешить", f"approve_{request_id}"),
+        btn("❌ Запретить", f"deny_{request_id}"),
+    )
+    return builder.as_markup()
+
+
+# ===================== АДМИН-ПАНЕЛЬ =====================
 
 def admin_panel_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(btn("Выбрать год", "admin_year", "📅"))
-    builder.row(btn("Список пользователей", "admin_users", "📋"))
-    builder.row(btn("Рассылка", "admin_broadcast", "📢"))
-    builder.row(btn("Снять пользователя", "admin_remove", "🗑️"))
-    builder.row(btn("Обновить сообщение регистрации", "admin_update_msg", "🔄"))
-    builder.row(btn("Статистика", "admin_stats", "📊"))
+    builder.row(btn("📅 Выбрать год", "admin_year"))
+    builder.row(btn("📋 Список пользователей", "admin_users"))
+    builder.row(btn("📢 Рассылка", "admin_broadcast"))
+    builder.row(btn("🗑️ Снять пользователя", "admin_remove"))
+    builder.row(btn("🔄 Обновить сообщение регистрации", "admin_update_msg"))
+    builder.row(btn("📊 Статистика", "admin_stats"))
     builder.row(
-        btn("Завоёвано", "admin_conquer", "🏴"),
-        btn("Снять завоёвано", "admin_unconquer", "✅"),
+        btn("🏴 Завоёвано", "admin_conquer"),
+        btn("✅ Снять завоёвано", "admin_unconquer"),
     )
     return builder.as_markup()
 
+
 def year_select_kb() -> InlineKeyboardMarkup:
+    """Выбор года вайпа."""
     builder = InlineKeyboardBuilder()
     current = get_current_year()
     for year in DATA_YEARS:
-        label = f"{year} ✓" if year == current else str(year)
+        label = f"✓ {year}" if year == current else str(year)
         builder.button(text=label, callback_data=f"set_year_{year}")
     builder.adjust(3)
-    builder.row(btn("Свой год", "admin_custom_year", "✏️"))
-    builder.row(btn("Назад", "back_admin", "🔙"))
+    builder.row(btn("✏️ Свой год", "admin_custom_year"))
+    builder.row(btn("🔙 Назад", "back_admin"))
     return builder.as_markup()
 
-def approve_deny_kb(request_id: str) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        btn("Разрешить", f"approve_{request_id}", "✅"),
-        btn("Запретить", f"deny_{request_id}", "❌"),
-    )
-    return builder.as_markup()
 
 def back_to_admin_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(btn("В админ-панель", "back_admin", "🔙"))
+    builder.row(btn("🔙 В админ-панель", "back_admin"))
     return builder.as_markup()
