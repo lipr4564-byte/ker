@@ -2,7 +2,6 @@
 Обработчики регистрации
 """
 
-import re
 import uuid
 from html import escape
 from aiogram import Router, F
@@ -41,6 +40,7 @@ router = Router()
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
+
 class RegStates(StatesGroup):
     choosing_type = State()
     choosing_slot_text = State()
@@ -51,15 +51,24 @@ class RegStates(StatesGroup):
     confirming_unregister = State()
     waiting_unregister_name = State()
 
-pending_requests: dict[str, dict] = {}
-confirm_data: dict[str, str] = {}
-slot_select_data: dict[str, str] = {}
-unregister_data: dict[str, str] = {}
+
+# Словари для хранения данных между шагами
+# request_id -> dict с данными запроса
+pending_requests: dict = {}
+# confirm_id -> slot_key
+confirm_data: dict = {}
+# select_id -> slot_key
+slot_select_data: dict = {}
+# rid -> slot_key
+unregister_data: dict = {}
+
 
 def esc(text: str) -> str:
     return escape(str(text))
 
+
 async def update_reg_message(bot, year: int):
+    """Обновить или создать сообщение регистрации в теме."""
     text = build_reg_message(year)
     msg_id = get_reg_message_id()
 
@@ -76,35 +85,46 @@ async def update_reg_message(bot, year: int):
             err_msg = str(e)
             if "message is not modified" in err_msg:
                 return
-            if "message to edit not found" in err_msg or "message not found" in err_msg:
-                log.warning(f"Сообщение {msg_id} не найдено, создаю новое.")
-                set_reg_message_id(None)
-            else:
-                log.warning(f"Не удалось отредактировать сообщение регистрации (id={msg_id}): {e}")
-                set_reg_message_id(None)
+            log.warning(f"Не удалось отредактировать сообщение (id={msg_id}): {e}")
+            set_reg_message_id(None)
 
-    if not get_reg_message_id():
-        try:
-            sent = await bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=TOPIC_ID,
-                text=text,
-                parse_mode="HTML",
-            )
-            set_reg_message_id(sent.message_id)
-            log.info(f"Новое сообщение регистрации отправлено в тему {TOPIC_ID}, id={sent.message_id}")
-        except Exception as e:
-            log.error(f"Критическая ошибка отправки сообщения регистрации: {e}")
+    # Отправляем новое сообщение в тему
+    try:
+        sent = await bot.send_message(
+            chat_id=GROUP_ID,
+            message_thread_id=TOPIC_ID,
+            text=text,
+            parse_mode="HTML",
+        )
+        set_reg_message_id(sent.message_id)
+        log.info(f"Новое сообщение отправлено в тему {TOPIC_ID}, id={sent.message_id}")
+    except Exception as e:
+        log.error(f"Критическая ошибка отправки сообщения: {e}")
+
 
 def _check_conquered(slot_key: str) -> bool:
     return is_slot_conquered(slot_key)
 
+
+def _get_user_info_from_message(user) -> tuple:
+    """Извлечь username и full_name из объекта пользователя aiogram."""
+    username = user.username or ""
+    full_name = user.full_name or str(user.id)
+    return username, full_name
+
+
+# ===================== СТАРТ РЕГИСТРАЦИИ =====================
+
 @router.callback_query(F.data == "reg_start")
 async def reg_start(callback: CallbackQuery, state: FSMContext):
     user = callback.from_user
+
     is_member = await check_member(callback.bot, user.id)
     if not is_member:
-        await callback.answer("⛔ Сначала вступите в Rise of Europe!", show_alert=True)
+        await callback.answer(
+            "⛔ Сначала вступите в Rise of Europe!",
+            show_alert=True
+        )
         return
 
     current_reg = get_user_registration(user.id)
@@ -128,6 +148,9 @@ async def reg_start(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(RegStates.choosing_type)
     await callback.answer()
+
+
+# ===================== ВЫБОР ТИПА =====================
 
 @router.callback_query(RegStates.choosing_type, F.data == "type_country")
 async def type_country(callback: CallbackQuery, state: FSMContext):
@@ -155,12 +178,14 @@ async def type_country(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(reg_type="country")
     await state.set_state(RegStates.choosing_slot_text)
+
     await callback.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=interesting_countries_kb(data_year, slot_select_data)
     )
     await callback.answer()
+
 
 @router.callback_query(RegStates.choosing_type, F.data == "type_pmc")
 async def type_pmc(callback: CallbackQuery, state: FSMContext):
@@ -176,18 +201,19 @@ async def type_pmc(callback: CallbackQuery, state: FSMContext):
         f"{pe('🛡️')} Ты решил играть за <b>ЧВК</b>!\n\n"
         f"Выбери из доступных вариантов или напиши название вручную."
     )
-
     if not free_pmcs:
         text += f"\n\n{pe('😔')} К сожалению, все ЧВК заняты."
 
     await state.update_data(reg_type="pmc")
     await state.set_state(RegStates.choosing_slot_text)
+
     await callback.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=pmc_kb(data_year, slot_select_data)
     )
     await callback.answer()
+
 
 @router.callback_query(RegStates.choosing_type, F.data == "type_mo_vice")
 async def type_mo_vice(callback: CallbackQuery, state: FSMContext):
@@ -198,6 +224,7 @@ async def type_mo_vice(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
 @router.callback_query(F.data == "back_mo_vice")
 async def back_mo_vice(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -206,6 +233,7 @@ async def back_mo_vice(callback: CallbackQuery, state: FSMContext):
         reply_markup=mo_vice_choice_kb()
     )
     await callback.answer()
+
 
 @router.callback_query(F.data == "type_mo")
 async def type_mo(callback: CallbackQuery, state: FSMContext):
@@ -221,18 +249,19 @@ async def type_mo(callback: CallbackQuery, state: FSMContext):
         f"{pe('⚔️')} Ты решил играть за <b>Министерство обороны</b>!\n\n"
         f"Выбери страну или напиши название МО вручную."
     )
-
     if not free_mo:
         text += f"\n\n{pe('😔')} Все позиции МО заняты."
 
     await state.update_data(reg_type="mo")
     await state.set_state(RegStates.choosing_slot_text)
+
     await callback.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=mo_kb(data_year, slot_select_data)
     )
     await callback.answer()
+
 
 @router.callback_query(F.data == "type_vice")
 async def type_vice(callback: CallbackQuery, state: FSMContext):
@@ -248,18 +277,19 @@ async def type_vice(callback: CallbackQuery, state: FSMContext):
         f"{pe('🤝')} Ты решил играть за <b>Вице-президента/Вице-лидера</b>!\n\n"
         f"Выбери страну или напиши название вручную."
     )
-
     if not free_vice:
         text += f"\n\n{pe('😔')} Все позиции Вице заняты."
 
     await state.update_data(reg_type="vice")
     await state.set_state(RegStates.choosing_slot_text)
+
     await callback.message.edit_text(
         text,
         parse_mode="HTML",
         reply_markup=vice_kb(data_year, slot_select_data)
     )
     await callback.answer()
+
 
 @router.callback_query(F.data == "type_terror")
 async def type_terror(callback: CallbackQuery, state: FSMContext):
@@ -275,12 +305,12 @@ async def type_terror(callback: CallbackQuery, state: FSMContext):
         f"{pe('💣')} Ты решил играть за <b>Террористическую организацию</b>!\n\n"
         f"Выбери из списка или напиши название вручную."
     )
-
     if not free_terror:
         text += f"\n\n{pe('😔')} Все организации заняты."
 
     await state.update_data(reg_type="terror")
     await state.set_state(RegStates.choosing_slot_text)
+
     await callback.message.edit_text(
         text,
         parse_mode="HTML",
@@ -288,10 +318,12 @@ async def type_terror(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
 @router.callback_query(F.data == "type_other")
 async def type_other(callback: CallbackQuery, state: FSMContext):
     await state.update_data(reg_type="other")
     await state.set_state(RegStates.waiting_other_text)
+
     await callback.message.edit_text(
         f"{pe('🌐')} <b>Иное движение / формирование</b>\n\n"
         f"Напиши название формирования, за которое хочешь играть.\n\n"
@@ -300,6 +332,9 @@ async def type_other(callback: CallbackQuery, state: FSMContext):
         reply_markup=None
     )
     await callback.answer()
+
+
+# ===================== СВЕРХДЕРЖАВА =====================
 
 @router.callback_query(F.data == "reg_superpower")
 async def reg_superpower(callback: CallbackQuery, state: FSMContext):
@@ -327,6 +362,7 @@ async def reg_superpower(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
 @router.message(RegStates.waiting_superpower_text, F.text, ~F.text.startswith("/"))
 async def handle_superpower_text(message: Message, state: FSMContext):
     user = message.from_user
@@ -351,15 +387,14 @@ async def handle_superpower_text(message: Message, state: FSMContext):
         sp_names = ", ".join(s["name"] for s in superpowers)
         await message.answer(
             f"{pe('❓')} Не нашёл сверхдержаву <b>{esc(text)}</b>.\n\n"
-            f"Доступные сверхдержавы: {sp_names}\n\n"
-            f"Проверь правильность написания.",
+            f"Доступные: {sp_names}\n\nПроверь написание.",
             parse_mode="HTML"
         )
         return
 
     if _check_conquered(slot["key"]):
         await message.answer(
-            f"{pe('⛔')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> недоступна для выбора.",
+            f"{pe('⛔')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> недоступна.",
             parse_mode="HTML"
         )
         return
@@ -371,16 +406,24 @@ async def handle_superpower_text(message: Message, state: FSMContext):
         )
         return
 
+    username, full_name = _get_user_info_from_message(user)
+
     await log_superpower_request(
-        bot, user.id, user.username or "",
-        user.full_name or "", slot["name"]
+        bot, user.id, username, full_name, slot["name"]
     )
 
     request_id = str(uuid.uuid4())[:8]
+    # ВАЖНО: сохраняем username и full_name прямо сейчас из объекта Message
     pending_requests[request_id] = {
         "user_id": user.id,
+        "username": username,
+        "full_name": full_name,
         "slot_key": slot["key"],
-        "action": "superpower"
+        "slot_name": slot["name"],
+        "slot_flag": slot.get("flag", "🏳️"),
+        "slot_type": slot.get("type", "superpower"),
+        "action": "superpower",
+        "custom_name": None,
     }
 
     await message.answer(
@@ -393,9 +436,10 @@ async def handle_superpower_text(message: Message, state: FSMContext):
             chat_id=OWNER_ID,
             text=(
                 f"👑 <b>Запрос на сверхдержаву</b>\n\n"
-                f"Пользователь: <code>{esc(user.full_name)}</code> | "
-                f"@{user.username or 'нет'} | ID: <code>{user.id}</code>\n"
-                f"Хочет занять: <b>{esc(slot['flag'])} {esc(slot['name'])}</b>\n\nРазрешить?"
+                f"Пользователь: <code>{esc(full_name)}</code> | "
+                f"@{username or 'нет'} | ID: <code>{user.id}</code>\n"
+                f"Хочет занять: <b>{esc(slot['flag'])} {esc(slot['name'])}</b>\n\n"
+                f"Разрешить?"
             ),
             parse_mode="HTML",
             reply_markup=approve_deny_kb(request_id)
@@ -405,6 +449,9 @@ async def handle_superpower_text(message: Message, state: FSMContext):
 
     await state.clear()
 
+
+# ===================== ИНОЕ ДВИЖЕНИЕ =====================
+
 @router.message(RegStates.waiting_other_text, F.text, ~F.text.startswith("/"))
 async def handle_other_text(message: Message, state: FSMContext):
     user = message.from_user
@@ -413,42 +460,65 @@ async def handle_other_text(message: Message, state: FSMContext):
     data_year = get_data_year(year)
     text = message.text.strip()
 
+    username, full_name = _get_user_info_from_message(user)
+
     other_list = get_other(data_year)
     slot = next(
         (o for o in other_list if o["name"].lower() == text.lower()),
         None
     )
 
+    # Частичное совпадение если точного нет
+    if not slot:
+        slot = next(
+            (o for o in other_list if text.lower() in o["name"].lower()),
+            None
+        )
+
     if slot and _check_conquered(slot["key"]):
         await message.answer(
-            f"{pe('⛔')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> недоступна для выбора.",
+            f"{pe('⛔')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> недоступна.",
             parse_mode="HTML"
         )
         return
 
     if slot and is_slot_occupied(slot["key"]):
         await message.answer(
-            f"{pe('😔')} <b>🏳️ {esc(slot['name'])}</b> уже занято.",
+            f"{pe('😔')} <b>{esc(slot.get('flag', '🏳️'))} {esc(slot['name'])}</b> уже занято.",
             parse_mode="HTML"
         )
         return
 
-    await log_other_request(
-        bot, user.id, user.username or "",
-        user.full_name or "", text
-    )
+    await log_other_request(bot, user.id, username, full_name, text)
 
-    slot_key = (
-        slot["key"] if slot
-        else f"other_custom_{text.replace(' ', '_')}"
-    )
+    # Ключ и данные слота
+    if slot:
+        slot_key = slot["key"]
+        slot_name = slot["name"]
+        slot_flag = slot.get("flag", "🏳️")
+        slot_type = slot.get("type", "other")
+        is_custom = False
+    else:
+        # Кастомное движение — генерируем ключ
+        slot_key = f"other_custom_{uuid.uuid4().hex[:8]}"
+        slot_name = text
+        slot_flag = "🏳️"
+        slot_type = "other"
+        is_custom = True
 
     request_id = str(uuid.uuid4())[:8]
+    # ВАЖНО: сохраняем ВСЕ данные сразу — не полагаемся на get_user_data
     pending_requests[request_id] = {
         "user_id": user.id,
+        "username": username,
+        "full_name": full_name,
         "slot_key": slot_key,
+        "slot_name": slot_name,
+        "slot_flag": slot_flag,
+        "slot_type": slot_type,
         "action": "other",
-        "custom_name": None if slot else text
+        "custom_name": text if is_custom else None,
+        "is_custom": is_custom,
     }
 
     await message.answer(
@@ -461,9 +531,10 @@ async def handle_other_text(message: Message, state: FSMContext):
             chat_id=OWNER_ID,
             text=(
                 f"🌐 <b>Запрос на иное движение</b>\n\n"
-                f"Пользователь: <code>{esc(user.full_name)}</code> | "
-                f"@{user.username or 'нет'} | ID: <code>{user.id}</code>\n"
-                f"Хочет играть за: <b>{esc(text)}</b>\n\nРазрешить?"
+                f"Пользователь: <code>{esc(full_name)}</code> | "
+                f"@{username or 'нет'} | ID: <code>{user.id}</code>\n"
+                f"Хочет играть за: <b>{esc(text)}</b>\n\n"
+                f"Разрешить?"
             ),
             parse_mode="HTML",
             reply_markup=approve_deny_kb(request_id)
@@ -473,10 +544,14 @@ async def handle_other_text(message: Message, state: FSMContext):
 
     await state.clear()
 
+
+# ===================== ВЫБОР СЛОТА КНОПКОЙ =====================
+
 @router.callback_query(F.data.startswith("select_"))
 async def select_slot(callback: CallbackQuery, state: FSMContext):
     select_id = callback.data[len("select_"):]
     slot_key = slot_select_data.pop(select_id, None)
+
     if not slot_key:
         await callback.answer("❌ Данные устарели, попробуйте снова.", show_alert=True)
         return
@@ -487,7 +562,7 @@ async def select_slot(callback: CallbackQuery, state: FSMContext):
         return
 
     if _check_conquered(slot_key):
-        await callback.answer("⛔ Этот слот недоступен для выбора!", show_alert=True)
+        await callback.answer("⛔ Этот слот недоступен!", show_alert=True)
         return
 
     if is_slot_occupied(slot_key):
@@ -497,7 +572,7 @@ async def select_slot(callback: CallbackQuery, state: FSMContext):
     confirm_id = str(uuid.uuid4())[:8]
     confirm_data[confirm_id] = slot_key
 
-    await state.update_data(pending_slot_key=slot_key, pending_slot=slot)
+    await state.update_data(pending_slot_key=slot_key)
 
     await callback.message.edit_text(
         f"{pe('🎯')} Ты выбрал: <b>{esc(slot['flag'])} {esc(slot['name'])}</b>\n\n"
@@ -507,6 +582,9 @@ async def select_slot(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(RegStates.confirming_slot)
     await callback.answer()
+
+
+# ===================== ВВОД СЛОТА ТЕКСТОМ =====================
 
 @router.message(RegStates.choosing_slot_text, F.text, ~F.text.startswith("/"))
 async def handle_slot_text(message: Message, state: FSMContext):
@@ -521,8 +599,10 @@ async def handle_slot_text(message: Message, state: FSMContext):
 
     all_slots = get_slots_for_year(data_year)
 
+    # Точное совпадение
     slot = find_slot_by_name(text, data_year)
 
+    # Частичное по типу
     if not slot:
         slot = next(
             (s for s in all_slots
@@ -530,6 +610,7 @@ async def handle_slot_text(message: Message, state: FSMContext):
             None
         )
 
+    # Частичное без типа
     if not slot:
         slot = next(
             (s for s in all_slots if text.lower() in s["name"].lower()),
@@ -539,51 +620,57 @@ async def handle_slot_text(message: Message, state: FSMContext):
     if not slot:
         await message.answer(
             f"{pe('❓')} Не нашёл <b>{esc(text)}</b> среди доступных позиций.\n"
-            f"Проверь правильность написания или выбери из кнопок выше.",
+            f"Проверь написание или выбери из кнопок выше.",
             parse_mode="HTML"
         )
         return
 
     if _check_conquered(slot["key"]):
         await message.answer(
-            f"{pe('⛔')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> недоступна для выбора.",
+            f"{pe('⛔')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> недоступна.",
             parse_mode="HTML"
         )
         return
 
+    # Сверхдержава — на одобрение
     if slot.get("type") == "superpower":
+        username, full_name = _get_user_info_from_message(user)
         await state.clear()
-        await log_superpower_request(
-            bot, user.id, user.username or "",
-            user.full_name or "", slot["name"]
-        )
+        await log_superpower_request(bot, user.id, username, full_name, slot["name"])
 
         request_id = str(uuid.uuid4())[:8]
         pending_requests[request_id] = {
             "user_id": user.id,
+            "username": username,
+            "full_name": full_name,
             "slot_key": slot["key"],
-            "action": "superpower"
+            "slot_name": slot["name"],
+            "slot_flag": slot.get("flag", "🏳️"),
+            "slot_type": "superpower",
+            "action": "superpower",
+            "custom_name": None,
+            "is_custom": False,
         }
 
         await message.answer(
-            f"{pe('📩')} Я направил твой запрос администрации на рассмотрение. Ожидай!",
+            f"{pe('📩')} Я направил твой запрос администрации. Ожидай!",
             parse_mode="HTML"
         )
-
         try:
             await bot.send_message(
                 chat_id=OWNER_ID,
                 text=(
                     f"👑 <b>Запрос на сверхдержаву</b>\n\n"
-                    f"Пользователь: <code>{esc(user.full_name)}</code> | "
-                    f"@{user.username or 'нет'} | ID: <code>{user.id}</code>\n"
-                    f"Хочет занять: <b>{esc(slot['flag'])} {esc(slot['name'])}</b>\n\nРазрешить?"
+                    f"Пользователь: <code>{esc(full_name)}</code> | "
+                    f"@{username or 'нет'} | ID: <code>{user.id}</code>\n"
+                    f"Хочет занять: <b>{esc(slot['flag'])} {esc(slot['name'])}</b>\n\n"
+                    f"Разрешить?"
                 ),
                 parse_mode="HTML",
                 reply_markup=approve_deny_kb(request_id)
             )
         except Exception as e:
-            log.error(f"Не удалось отправить запрос владельцу: {e}")
+            log.error(f"Ошибка отправки запрос владельцу: {e}")
         return
 
     if is_slot_occupied(slot["key"]):
@@ -595,8 +682,7 @@ async def handle_slot_text(message: Message, state: FSMContext):
 
     confirm_id = str(uuid.uuid4())[:8]
     confirm_data[confirm_id] = slot["key"]
-
-    await state.update_data(pending_slot_key=slot["key"], pending_slot=slot)
+    await state.update_data(pending_slot_key=slot["key"])
 
     await message.answer(
         f"{pe('🎯')} Ты выбрал: <b>{esc(slot['flag'])} {esc(slot['name'])}</b>\n\n"
@@ -606,10 +692,14 @@ async def handle_slot_text(message: Message, state: FSMContext):
     )
     await state.set_state(RegStates.confirming_slot)
 
+
+# ===================== ПОДТВЕРЖДЕНИЕ РЕГИСТРАЦИИ =====================
+
 @router.callback_query(F.data.startswith("confirm_register_"))
 async def confirm_register(callback: CallbackQuery, state: FSMContext):
     confirm_id = callback.data[len("confirm_register_"):]
     slot_key = confirm_data.pop(confirm_id, None)
+
     if not slot_key:
         await callback.answer("❌ Данные устарели, попробуйте снова.", show_alert=True)
         return
@@ -630,23 +720,33 @@ async def confirm_register(callback: CallbackQuery, state: FSMContext):
         return
 
     if is_slot_occupied(slot_key):
-        await callback.answer("😔 Этот слот уже занят кем-то другим!", show_alert=True)
+        await callback.answer("😔 Этот слот уже занят!", show_alert=True)
         return
 
+    username, full_name = _get_user_info_from_message(user)
+
+    # Проверка лимита пересадок
     if current_reg:
         relocations = get_user_relocations(user.id)
 
         if relocations >= MAX_RELOCATIONS:
             await log_relocation_request(
-                bot, user.id, user.username or "", user.full_name or "",
+                bot, user.id, username, full_name,
                 current_reg["slot_name"], slot["name"], relocations
             )
 
             request_id = str(uuid.uuid4())[:8]
             pending_requests[request_id] = {
                 "user_id": user.id,
+                "username": username,
+                "full_name": full_name,
                 "slot_key": slot_key,
-                "action": "relocation"
+                "slot_name": slot["name"],
+                "slot_flag": slot.get("flag", "🏳️"),
+                "slot_type": slot.get("type", "country"),
+                "action": "relocation",
+                "custom_name": None,
+                "is_custom": False,
             }
 
             try:
@@ -654,47 +754,43 @@ async def confirm_register(callback: CallbackQuery, state: FSMContext):
                     chat_id=OWNER_ID,
                     text=(
                         f"⚠️ <b>Запрос на пересадку (лимит превышен)</b>\n\n"
-                        f"Пользователь: <code>{esc(user.full_name)}</code> | "
-                        f"@{user.username or 'нет'} | ID: <code>{user.id}</code>\n"
+                        f"Пользователь: <code>{esc(full_name)}</code> | "
+                        f"@{username or 'нет'} | ID: <code>{user.id}</code>\n"
                         f"Текущая позиция: <b>{esc(current_reg['slot_name'])}</b>\n"
                         f"Хочет перейти на: <b>{esc(slot['name'])}</b>\n"
-                        f"Количество пересадок: <code>{relocations}</code>\n\nРазрешить?"
+                        f"Пересадок: <code>{relocations}</code>\n\nРазрешить?"
                     ),
                     parse_mode="HTML",
                     reply_markup=approve_deny_kb(request_id)
                 )
             except Exception as e:
-                log.error(f"Не удалось отправить запрос владельцу: {e}")
+                log.error(f"Ошибка отправки запроса: {e}")
 
             await callback.message.edit_text(
-                f"{pe('⚠️')} Вы превысили лимит количества пересадок.\n\n"
-                f"{pe('📩')} Я направил ваш запрос на рассмотрение администрации. Ожидайте!",
+                f"{pe('⚠️')} Вы превысили лимит пересадок.\n\n"
+                f"{pe('📩')} Запрос отправлен на рассмотрение. Ожидайте!",
                 parse_mode="HTML"
             )
             await state.clear()
             await callback.answer()
             return
 
+        # Снимаем со старой позиции
         old_slot_name = current_reg["slot_name"]
         unregister_slot(current_reg["slot_key"])
         increment_relocations(user.id)
-        await log_unregister(
-            bot, user.id, user.username or "",
-            user.full_name or "", old_slot_name
-        )
+        await log_unregister(bot, user.id, username, full_name, old_slot_name)
 
+    # Регистрируем
     register_slot(
         slot_key=slot_key,
         user_id=user.id,
-        username=user.username or "",
-        full_name=user.full_name or str(user.id),
+        username=username,
+        full_name=full_name,
         slot_info=slot
     )
 
-    await log_registration(
-        bot, user.id, user.username or "",
-        user.full_name or "", slot["name"], slot["type"]
-    )
+    await log_registration(bot, user.id, username, full_name, slot["name"], slot["type"])
     await update_reg_message(bot, year)
 
     await callback.message.edit_text(
@@ -707,6 +803,7 @@ async def confirm_register(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("✅ Регистрация успешна!")
 
+
 @router.callback_query(F.data == "cancel_confirm")
 async def cancel_confirm(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -717,6 +814,9 @@ async def cancel_confirm(callback: CallbackQuery, state: FSMContext):
         reply_markup=main_menu_kb(has_registration=bool(current_reg)),
     )
     await callback.answer()
+
+
+# ===================== СНЯТИЕ С ПОЗИЦИИ =====================
 
 @router.callback_query(F.data == "unregister_start")
 async def unregister_start(callback: CallbackQuery, state: FSMContext):
@@ -732,10 +832,11 @@ async def unregister_start(callback: CallbackQuery, state: FSMContext):
         f"{pe('🚪')} <b>Снятие с позиции</b>\n\n"
         f"{pe('📍')} Ты сейчас за: "
         f"<b>{esc(current_reg['slot_flag'])} {esc(current_reg['slot_name'])}</b>\n\n"
-        f"Напиши название страны/позиции, с которой хочешь сняться.",
+        f"Напиши название позиции, с которой хочешь сняться.",
         parse_mode="HTML",
     )
     await callback.answer()
+
 
 @router.message(RegStates.waiting_unregister_name, F.text, ~F.text.startswith("/"))
 async def handle_unregister_name(message: Message, state: FSMContext):
@@ -762,7 +863,6 @@ async def handle_unregister_name(message: Message, state: FSMContext):
 
     rid = str(uuid.uuid4())[:8]
     unregister_data[rid] = current_reg["slot_key"]
-    await state.update_data(unregister_slot_key=current_reg["slot_key"])
     await state.set_state(RegStates.confirming_unregister)
 
     await message.answer(
@@ -772,6 +872,7 @@ async def handle_unregister_name(message: Message, state: FSMContext):
         reply_markup=unregister_confirm_kb(rid),
     )
 
+
 @router.callback_query(F.data.startswith("unregister_"))
 async def unregister(callback: CallbackQuery, state: FSMContext):
     if callback.data == "unregister_start":
@@ -779,18 +880,22 @@ async def unregister(callback: CallbackQuery, state: FSMContext):
 
     rid = callback.data[len("unregister_"):]
     slot_key = unregister_data.pop(rid, None)
+
     if not slot_key:
-        slot_key = rid
+        await callback.answer("❌ Данные устарели.", show_alert=True)
+        return
+
     user = callback.from_user
     bot = callback.bot
     year = get_current_year()
+    username, full_name = _get_user_info_from_message(user)
 
     removed = unregister_slot(slot_key)
 
     if removed:
         await log_unregister(
-            bot, user.id, user.username or "",
-            user.full_name or "", removed.get("slot_name", "?")
+            bot, user.id, username, full_name,
+            removed.get("slot_name", "?")
         )
         increment_relocations(user.id)
         await update_reg_message(bot, year)
@@ -811,94 +916,108 @@ async def unregister(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
+
+# ===================== ОДОБРЕНИЕ ВЛАДЕЛЬЦЕМ =====================
+
 @router.callback_query(F.data.startswith("approve_"))
 async def approve_request(callback: CallbackQuery):
     if callback.from_user.id != OWNER_ID:
         await callback.answer("⛔ Только для владельца!", show_alert=True)
         return
 
-    request_id = callback.data.split("_", 1)[1]
+    request_id = callback.data[len("approve_"):]
     req = pending_requests.pop(request_id, None)
+
     if not req:
         await callback.answer("❌ Запрос не найден или устарел", show_alert=True)
         return
 
     user_id = req["user_id"]
+    # ВАЖНО: берём данные из req, не из get_user_data!
+    username = req.get("username", "")
+    full_name = req.get("full_name", str(user_id))
     slot_key = req["slot_key"]
     action = req["action"]
+    is_custom = req.get("is_custom", False)
     bot = callback.bot
     year = get_current_year()
+    data_year = get_data_year(year)
 
-    if action in ("superpower", "other", "relocation"):
+    # Собираем слот из данных запроса
+    if is_custom:
+        # Кастомное иное движение — слот не в базе
+        slot = {
+            "key": slot_key,
+            "name": req.get("custom_name", req.get("slot_name", "?")),
+            "type": "other",
+            "flag": "🏳️",
+            "year": data_year,
+            "superpower": False,
+        }
+    else:
         slot = find_slot_by_key(slot_key)
-
-        if action == "other" and "custom_name" in req and req["custom_name"]:
-            custom_name = req["custom_name"]
-            data_year = get_data_year(year)
+        if not slot:
+            # Попробуем восстановить из req
             slot = {
                 "key": slot_key,
-                "name": custom_name,
-                "type": "other",
-                "flag": "🏳️",
+                "name": req.get("slot_name", "?"),
+                "type": req.get("slot_type", "other"),
+                "flag": req.get("slot_flag", "🏳️"),
                 "year": data_year,
-                "superpower": False,
+                "superpower": req.get("slot_type") == "superpower",
             }
 
-        if action == "relocation":
-            current_reg = get_user_registration(user_id)
-            if current_reg:
-                unregister_slot(current_reg["slot_key"])
-                increment_relocations(user_id)
+    # При пересадке — снимаем со старой позиции
+    if action == "relocation":
+        current_reg = get_user_registration(user_id)
+        if current_reg:
+            unregister_slot(current_reg["slot_key"])
+            increment_relocations(user_id)
 
-        if slot and not is_slot_occupied(slot_key) and not _check_conquered(slot_key):
-            from database import get_user_data
-            user_data = get_user_data(user_id)
-            username = user_data.get("username", "") if user_data else ""
-            full_name = (
-                user_data.get("full_name", str(user_id))
-                if user_data else str(user_id)
+    # Проверяем доступность слота (кроме кастомных)
+    if not is_custom and (is_slot_occupied(slot_key) or _check_conquered(slot_key)):
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=f"{pe('❌')} К сожалению, этот слот уже недоступен.",
+                parse_mode="HTML"
             )
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ Одобрено (слот занят — уведомление отправлено)",
+            parse_mode="HTML"
+        )
+        await callback.answer("⚠️ Слот уже занят!")
+        return
 
-            if slot.get("type") == "other":
-                slot = dict(slot)
-                slot["flag"] = "🏳️"
+    # Регистрируем
+    register_slot(
+        slot_key=slot_key,
+        user_id=user_id,
+        username=username,
+        full_name=full_name,
+        slot_info=slot
+    )
 
-            register_slot(
-                slot_key=slot_key,
-                user_id=user_id,
-                username=username,
-                full_name=full_name,
-                slot_info=slot
-            )
+    await log_registration(
+        bot, user_id, username, full_name,
+        slot["name"], slot["type"]
+    )
+    await update_reg_message(bot, year)
 
-            await log_registration(
-                bot, user_id, username, full_name,
-                slot["name"], slot["type"]
-            )
-            await update_reg_message(bot, year)
-
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=(
-                        f"{pe('✅')} <b>Успешно!</b> Администрация одобрила ваш запрос!\n\n"
-                        f"{pe('📍')} Вы зарегистрированы за: "
-                        f"<b>{esc(slot['flag'])} {esc(slot['name'])}</b>"
-                    ),
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-
-        elif slot and (is_slot_occupied(slot_key) or _check_conquered(slot_key)):
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=f"{pe('❌')} К сожалению, этот слот уже недоступен.",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"{pe('✅')} <b>Успешно!</b> Администрация одобрила ваш запрос!\n\n"
+                f"{pe('📍')} Вы зарегистрированы за: "
+                f"<b>{esc(slot['flag'])} {esc(slot['name'])}</b>"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log.warning(f"Не удалось уведомить пользователя {user_id}: {e}")
 
     await callback.message.edit_text(
         callback.message.text + "\n\n✅ Одобрено",
@@ -906,13 +1025,16 @@ async def approve_request(callback: CallbackQuery):
     )
     await callback.answer("✅ Одобрено!")
 
+
+# ===================== ОТКЛОНЕНИЕ ВЛАДЕЛЬЦЕМ =====================
+
 @router.callback_query(F.data.startswith("deny_"))
 async def deny_request(callback: CallbackQuery):
     if callback.from_user.id != OWNER_ID:
         await callback.answer("⛔ Только для владельца!", show_alert=True)
         return
 
-    request_id = callback.data.split("_", 1)[1]
+    request_id = callback.data[len("deny_"):]
     req = pending_requests.pop(request_id, None)
     user_id = req["user_id"] if req else None
 
@@ -920,7 +1042,7 @@ async def deny_request(callback: CallbackQuery):
         try:
             await callback.bot.send_message(
                 chat_id=user_id,
-                text=f"{pe('❌')} <b>Не успешно!</b> Администрация отклонила ваш запрос.",
+                text=f"{pe('❌')} <b>Отказано.</b> Администрация отклонила ваш запрос.",
                 parse_mode="HTML"
             )
         except Exception:
@@ -931,6 +1053,9 @@ async def deny_request(callback: CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer("❌ Отклонено!")
+
+
+# ===================== НАЗАД =====================
 
 @router.callback_query(F.data == "back_reg_type")
 async def back_reg_type(callback: CallbackQuery, state: FSMContext):
