@@ -3,6 +3,8 @@
 """
 
 import io
+import os
+import json
 from html import escape
 from datetime import datetime
 
@@ -56,9 +58,71 @@ def esc(text: str) -> str:
 
 
 async def _update_reg_msg(bot, year: int):
-    """Вспомогательная функция обновления сообщения регистрации из admin."""
     from registration import update_reg_message
     await update_reg_message(bot, year)
+
+
+# ===================== КОМАНДА ПОЧИНКИ БД =====================
+
+@router.message(Command("fixdb"), F.chat.type == ChatType.PRIVATE)
+async def cmd_fixdb(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+
+    DB_FILE = "data/database.json"
+    USERS_FILE = "data/users.json"
+
+    def load(path):
+        if not os.path.exists(path):
+            return {}
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def save(path, data):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    db = load(DB_FILE)
+    users = load(USERS_FILE)
+
+    fixed = 0
+    report_lines = []
+
+    for slot_key, reg in db.get("registrations", {}).items():
+        user_id = reg.get("user_id")
+        uid = str(user_id)
+
+        user_data = users.get(uid, {})
+        username = user_data.get("username", "")
+        full_name = user_data.get("full_name", "")
+
+        changed = False
+
+        if not reg.get("username") and username:
+            reg["username"] = username
+            changed = True
+
+        if (not reg.get("full_name") or reg.get("full_name") == str(user_id)) and full_name:
+            reg["full_name"] = full_name
+            changed = True
+
+        if changed:
+            fixed += 1
+            report_lines.append(
+                f"✅ {reg.get('slot_name', slot_key)}: "
+                f"@{username or 'нет'} / {full_name}"
+            )
+
+    save(DB_FILE, db)
+
+    report = "\n".join(report_lines) if report_lines else "Всё уже было корректно"
+
+    await message.answer(
+        f"🔧 <b>Починка БД завершена</b>\n\n"
+        f"Исправлено записей: <b>{fixed}</b>\n\n"
+        f"{report}",
+        parse_mode="HTML"
+    )
 
 
 # ===================== ADMIN ПАНЕЛЬ =====================
