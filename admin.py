@@ -1,5 +1,5 @@
 """
-Административная панель — все команды и callback'и
+Административная панель — полный функционал
 """
 
 import asyncio
@@ -9,7 +9,7 @@ from datetime import datetime
 from html import escape
 
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -24,7 +24,8 @@ from database import (
     find_conquered_by_name, is_slot_conquered,
     get_reg_message_id, set_reg_message_id,
     increment_relocations, wipe_all_registrations,
-    get_user_data, register_slot
+    get_user_data, register_slot, get_users_db, save_users_db,
+    get_db, save_db
 )
 from data_loader import (
     find_slot_by_key, get_data_year, reload_caches,
@@ -49,6 +50,13 @@ class AdminStates(StatesGroup):
     waiting_wipe_confirm = State()
     waiting_manual_reg_user = State()
     waiting_manual_reg_slot = State()
+    waiting_user_manage_id = State()
+    waiting_user_manage_action = State()
+    waiting_set_relocations = State()
+    waiting_ban_user = State()
+    waiting_create_slot_type = State()
+    waiting_create_slot_name = State()
+    waiting_create_slot_flag = State()
 
 
 def is_owner(user_id: int) -> bool:
@@ -60,7 +68,6 @@ def esc(text: str) -> str:
 
 
 async def _update_reg_msg(bot: Bot, year: int):
-    """Обновить или создать сообщение регистрации в теме."""
     from registration import update_reg_message
     await update_reg_message(bot, year)
 
@@ -521,9 +528,8 @@ async def handle_remove_id(message: Message, state: FSMContext):
                 removed_user_id = user_data["user_id"]
 
         if not removed:
-            result = dl_find_slot_by_name(text, year)  # ищем по названию в текущем году
-            if result:
-                slot = result
+            slot = dl_find_slot_by_name(text, year)
+            if slot:
                 reg = get_registrations().get(slot["key"])
                 if reg:
                     removed = unregister_slot(slot["key"])
@@ -563,64 +569,6 @@ async def handle_remove_id(message: Message, state: FSMContext):
         )
 
     await state.clear()
-
-
-# ===================== СБРОС ВСЕХ РЕГИСТРАЦИЙ =====================
-
-@router.callback_query(F.data == "admin_wipe_regs")
-async def admin_wipe_regs(callback: CallbackQuery, state: FSMContext):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!")
-        return
-
-    regs = get_registrations()
-    count = len(regs)
-
-    await state.set_state(AdminStates.waiting_wipe_confirm)
-    await callback.message.edit_text(
-        f"⚠️ <b>СБРОС ВСЕХ РЕГИСТРАЦИЙ</b>\n\n"
-        f"Сейчас зарегистрировано: <b>{count}</b> игроков\n\n"
-        f"❗ Это действие:\n"
-        f"▪️ Удалит ВСЕ регистрации\n"
-        f"▪️ Обнулит счётчики пересадок у всех\n"
-        f"▪️ Обновит сообщение в теме\n\n"
-        f"Для подтверждения напиши точно:\n<code>СБРОС</code>",
-        parse_mode="HTML",
-        reply_markup=back_to_admin_kb()
-    )
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_wipe_confirm, F.chat.type == ChatType.PRIVATE)
-async def handle_wipe_confirm(message: Message, state: FSMContext):
-    if not is_owner(message.from_user.id):
-        return
-
-    if message.text.strip() != "СБРОС":
-        await message.answer(
-            f"❌ Неверное слово. Напиши точно: <code>СБРОС</code>\n"
-            f"Или нажми «В админ-панель» для отмены.",
-            parse_mode="HTML",
-            reply_markup=back_to_admin_kb()
-        )
-        return
-
-    count = wipe_all_registrations()
-    year = get_current_year()
-    bot = message.bot
-
-    await _update_reg_msg(bot, year)
-
-    await message.answer(
-        f"✅ <b>Сброс выполнен!</b>\n\n"
-        f"🗑️ Удалено регистраций: <b>{count}</b>\n"
-        f"🔄 Счётчики пересадок: обнулены\n"
-        f"📋 Сообщение регистрации: обновлено",
-        parse_mode="HTML",
-        reply_markup=admin_panel_kb()
-    )
-    await state.clear()
-    log.info(f"Владелец сбросил все регистрации. Удалено: {count}")
 
 
 # ===================== РУЧНАЯ РЕГИСТРАЦИЯ =====================
@@ -748,6 +696,313 @@ async def handle_manual_reg_slot(message: Message, state: FSMContext):
     await state.clear()
 
 
+# ===================== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЕМ =====================
+
+@router.callback_query(F.data == "admin_user_manage")
+async def admin_user_manage(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    await state.set_state(AdminStates.waiting_user_manage_id)
+    await callback.message.edit_text(
+        f"{pe('🔧')} <b>Управление пользователем</b>\n\n"
+        f"Введи ID или @юзернейм пользователя:",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_user_manage_id, F.chat.type == ChatType.PRIVATE)
+async def handle_user_manage_id(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        return
+
+    text = message.text.strip()
+    user_data = None
+
+    if text.isdigit():
+        user_id = int(text)
+        user_data = get_user_data(user_id)
+        if not user_data:
+            user_data = {"user_id": user_id, "username": "", "full_name": str(user_id)}
+    else:
+        uname = text.lstrip("@")
+        user_data = get_user_by_username(uname)
+
+    if not user_data:
+        await message.answer(
+            f"❌ Пользователь не найден.",
+            parse_mode="HTML",
+            reply_markup=back_to_admin_kb()
+        )
+        return
+
+    user_id = user_data["user_id"]
+    username = user_data.get("username", "")
+    full_name = user_data.get("full_name", str(user_id))
+    relocations = user_data.get("relocations", 0)
+
+    reg = get_user_registration(user_id)
+    reg_info = f"{reg['slot_flag']} {reg['slot_name']}" if reg else "не зарегистрирован"
+
+    await state.update_data(manage_user_id=user_id)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Изменить пересадки", callback_data="manage_set_relo")],
+            [InlineKeyboardButton(text="🚫 Забанить", callback_data="manage_ban")],
+            [InlineKeyboardButton(text="🔓 Разбанить", callback_data="manage_unban")],
+            [InlineKeyboardButton(text="🗑️ Снять с позиции", callback_data="manage_unreg")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_admin")]
+        ]
+    )
+
+    await message.answer(
+        f"{pe('👤')} <b>Информация о пользователе</b>\n\n"
+        f"ID: <code>{user_id}</code>\n"
+        f"Имя: {esc(full_name)}\n"
+        f"Юзернейм: @{username or 'нет'}\n"
+        f"Пересадок: <b>{relocations}</b>\n"
+        f"Позиция: <b>{esc(reg_info)}</b>",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "manage_set_relo")
+async def manage_set_relo(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    data = await state.get_data()
+    user_id = data.get("manage_user_id")
+    if not user_id:
+        await callback.answer("❌ Ошибка: пользователь не выбран", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_set_relocations)
+    await callback.message.answer(
+        f"✏️ Введи новое количество пересадок для пользователя <code>{user_id}</code>:",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_set_relocations, F.chat.type == ChatType.PRIVATE)
+async def handle_set_relocations(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        return
+
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ Введи целое число.")
+        return
+
+    data = await state.get_data()
+    user_id = data.get("manage_user_id")
+    if not user_id:
+        await message.answer("❌ Ошибка: пользователь не выбран.")
+        return
+
+    new_count = int(text)
+    users_db = get_users_db()
+    uid = str(user_id)
+    if uid not in users_db:
+        users_db[uid] = {"user_id": user_id, "username": "", "full_name": str(user_id), "relocations": 0}
+    users_db[uid]["relocations"] = new_count
+    save_users_db(users_db)
+
+    await message.answer(
+        f"✅ Количество пересадок для <code>{user_id}</code> установлено: <b>{new_count}</b>",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+    await state.clear()
+
+
+@router.callback_query(F.data == "manage_ban")
+async def manage_ban(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    data = await state.get_data()
+    user_id = data.get("manage_user_id")
+    if not user_id:
+        await callback.answer("❌ Ошибка", show_alert=True)
+        return
+
+    # Просто помечаем в базе (можно расширить)
+    db = get_db()
+    if "banned" not in db:
+        db["banned"] = []
+    if user_id not in db["banned"]:
+        db["banned"].append(user_id)
+    save_db(db)
+
+    await callback.message.answer(
+        f"🚫 Пользователь <code>{user_id}</code> забанен (не сможет регистрироваться).",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "manage_unban")
+async def manage_unban(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    data = await state.get_data()
+    user_id = data.get("manage_user_id")
+    if not user_id:
+        await callback.answer("❌ Ошибка", show_alert=True)
+        return
+
+    db = get_db()
+    if "banned" in db and user_id in db["banned"]:
+        db["banned"].remove(user_id)
+        save_db(db)
+
+    await callback.message.answer(
+        f"🔓 Пользователь <code>{user_id}</code> разбанен.",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "manage_unreg")
+async def manage_unreg(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    data = await state.get_data()
+    user_id = data.get("manage_user_id")
+    if not user_id:
+        await callback.answer("❌ Ошибка", show_alert=True)
+        return
+
+    reg = get_user_registration(user_id)
+    if not reg:
+        await callback.message.answer("❌ Пользователь не зарегистрирован.")
+        return
+
+    removed = unregister_slot(reg["slot_key"])
+    if removed:
+        await _update_reg_msg(callback.bot, get_current_year())
+        await callback.message.answer(
+            f"✅ Снят с позиции <b>{esc(removed['slot_name'])}</b>",
+            parse_mode="HTML",
+            reply_markup=back_to_admin_kb()
+        )
+    else:
+        await callback.message.answer("❌ Ошибка снятия.")
+    await callback.answer()
+
+
+# ===================== СОЗДАНИЕ КАСТОМНОГО СЛОТА =====================
+
+@router.callback_query(F.data == "admin_create_slot")
+async def admin_create_slot(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    await state.set_state(AdminStates.waiting_create_slot_type)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏳️ Страна", callback_data="create_type_country")],
+            [InlineKeyboardButton(text="🛡️ ЧВК", callback_data="create_type_pmc")],
+            [InlineKeyboardButton(text="⚔️ МО", callback_data="create_type_mo")],
+            [InlineKeyboardButton(text="🤝 Вице", callback_data="create_type_vice")],
+            [InlineKeyboardButton(text="💣 Террор", callback_data="create_type_terror")],
+            [InlineKeyboardButton(text="🌐 Иное", callback_data="create_type_other")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_admin")],
+        ]
+    )
+    await callback.message.edit_text(
+        f"➕ <b>Создание кастомного слота</b>\n\nВыбери тип слота:",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("create_type_"))
+async def create_slot_type(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    slot_type = callback.data[len("create_type_"):]
+    await state.update_data(create_slot_type=slot_type)
+    await state.set_state(AdminStates.waiting_create_slot_name)
+
+    await callback.message.edit_text(
+        f"Введи название нового слота (например: \"Новая республика\"):",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_create_slot_name, F.chat.type == ChatType.PRIVATE)
+async def create_slot_name(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        return
+
+    name = message.text.strip()
+    await state.update_data(create_slot_name=name)
+    await state.set_state(AdminStates.waiting_create_slot_flag)
+
+    await message.answer(
+        f"Введи флаг для слота (эмодзи, например 🇺🇦):",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+
+
+@router.message(AdminStates.waiting_create_slot_flag, F.chat.type == ChatType.PRIVATE)
+async def create_slot_flag(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        return
+
+    flag = message.text.strip()
+    data = await state.get_data()
+    slot_type = data.get("create_slot_type", "other")
+    name = data.get("create_slot_name", "Новый слот")
+    year = get_current_year()
+    data_year = get_data_year(year)
+
+    # Генерируем ключ
+    key = f"custom_{uuid.uuid4().hex[:8]}"
+
+    # Сохраняем в countries.txt (в конец файла)
+    with open("data/countries.txt", "a", encoding="utf-8") as f:
+        f.write(f"\n{data_year}|{slot_type}|{flag}|{name}|нет")
+
+    # Перезагружаем кэш
+    reload_caches()
+
+    await message.answer(
+        f"✅ <b>Слот создан!</b>\n\n"
+        f"Тип: {slot_type}\n"
+        f"Название: {flag} {esc(name)}\n"
+        f"Год: {data_year}\n\n"
+        f"Слот добавлен в countries.txt",
+        parse_mode="HTML",
+        reply_markup=admin_panel_kb()
+    )
+    await state.clear()
+
+
 # ===================== ОБНОВИТЬ СООБЩЕНИЕ =====================
 
 @router.callback_query(F.data == "admin_update_msg")
@@ -810,78 +1065,151 @@ async def admin_stats(callback: CallbackQuery):
     await callback.answer()
 
 
-# ===================== ФИКСАЦИЯ БД (/fixdb) =====================
+# ===================== ПОСМОТРЕТЬ ЛОГИ =====================
 
-@router.message(Command("fixdb"), F.chat.type == ChatType.PRIVATE)
-async def cmd_fixdb(message: Message):
+@router.callback_query(F.data == "admin_logs")
+async def admin_logs(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    log_file = "data/bot.log"
+    if not os.path.exists(log_file):
+        await callback.message.answer("❌ Лог-файл не найден.", reply_markup=back_to_admin_kb())
+        return
+
+    # Читаем последние 50 строк
+    with open(log_file, "r", encoding="utf-8") as f:
+        lines = f.readlines()[-50:]
+
+    content = "".join(lines)
+    if len(content) > 4000:
+        content = content[-4000:]  # обрезаем для телеграма
+
+    file = BufferedInputFile(content.encode("utf-8"), filename="bot.log")
+    await callback.message.answer_document(
+        file,
+        caption=f"📜 Последние 50 строк лога ({datetime.now().strftime('%d.%m.%Y %H:%M')})",
+        reply_markup=back_to_admin_kb()
+    )
+    await callback.answer()
+
+
+# ===================== ПЕРЕЗАГРУЗИТЬ КЭШ =====================
+
+@router.callback_query(F.data == "admin_reload_cache")
+async def admin_reload_cache(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    reload_caches()
+    await callback.message.edit_text(
+        f"✅ Кэш данных перезагружен!",
+        parse_mode="HTML",
+        reply_markup=admin_panel_kb()
+    )
+    await callback.answer("✅ Кэш обновлён!")
+
+
+# ===================== СБРОС ВСЕХ РЕГИСТРАЦИЙ =====================
+
+@router.callback_query(F.data == "admin_wipe_regs")
+async def admin_wipe_regs(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    regs = get_registrations()
+    count = len(regs)
+
+    await state.set_state(AdminStates.waiting_wipe_confirm)
+    await callback.message.edit_text(
+        f"⚠️ <b>СБРОС ВСЕХ РЕГИСТРАЦИЙ</b>\n\n"
+        f"Сейчас зарегистрировано: <b>{count}</b> игроков\n\n"
+        f"❗ Это действие:\n"
+        f"▪️ Удалит ВСЕ регистрации\n"
+        f"▪️ Обнулит счётчики пересадок у всех\n"
+        f"▪️ Обновит сообщение в теме\n\n"
+        f"Для подтверждения напиши точно:\n<code>СБРОС</code>",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_kb()
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_wipe_confirm, F.chat.type == ChatType.PRIVATE)
+async def handle_wipe_confirm(message: Message, state: FSMContext):
     if not is_owner(message.from_user.id):
         return
 
-    import json
-    DB_FILE = "data/database.json"
-    USERS_FILE = "data/users.json"
+    if message.text.strip() != "СБРОС":
+        await message.answer(
+            f"❌ Неверное слово. Напиши точно: <code>СБРОС</code>\n"
+            f"Или нажми «В админ-панель» для отмены.",
+            parse_mode="HTML",
+            reply_markup=back_to_admin_kb()
+        )
+        return
 
-    def load(path):
-        if not os.path.exists(path):
-            return {}
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+    count = wipe_all_registrations()
+    year = get_current_year()
+    bot = message.bot
 
-    def save(path, data):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    db = load(DB_FILE)
-    users = load(USERS_FILE)
-
-    fixed = 0
-    report_lines = []
-
-    for slot_key, reg in db.get("registrations", {}).items():
-        user_id = reg.get("user_id")
-        uid = str(user_id)
-        user_data = users.get(uid, {})
-        username = user_data.get("username", "")
-        full_name = user_data.get("full_name", "")
-        changed = False
-
-        if not reg.get("username") and username:
-            reg["username"] = username
-            changed = True
-
-        if (not reg.get("full_name") or reg.get("full_name") == str(user_id)) and full_name:
-            reg["full_name"] = full_name
-            changed = True
-
-        if changed:
-            fixed += 1
-            report_lines.append(
-                f"✅ {esc(reg.get('slot_name', slot_key))}: @{username or 'нет'} / {esc(full_name)}"
-            )
-
-    save(DB_FILE, db)
-
-    report = "\n".join(report_lines) if report_lines else "Все записи уже корректны"
+    await _update_reg_msg(bot, year)
 
     await message.answer(
-        f"🔧 <b>Починка БД завершена</b>\n\n"
-        f"Исправлено записей: <b>{fixed}</b>\n\n{report}",
-        parse_mode="HTML"
+        f"✅ <b>Сброс выполнен!</b>\n\n"
+        f"🗑️ Удалено регистраций: <b>{count}</b>\n"
+        f"🔄 Счётчики пересадок: обнулены\n"
+        f"📋 Сообщение регистрации: обновлено",
+        parse_mode="HTML",
+        reply_markup=admin_panel_kb()
+    )
+    await state.clear()
+    log.info(f"Владелец сбросил все регистрации. Удалено: {count}")
+
+
+# ===================== ВЫКЛЮЧЕНИЕ БОТА =====================
+
+@router.callback_query(F.data == "admin_shutdown")
+async def admin_shutdown(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, выключить", callback_data="shutdown_confirm"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="back_admin"),
+            ]
+        ]
     )
 
+    await callback.message.edit_text(
+        f"🛑 <b>Выключение бота</b>\n\n"
+        f"Вы уверены, что хотите выключить бота?\n"
+        f"Все пользователи получат уведомление о техническом обслуживании.",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
 
-# ===================== КОМАНДА SHUTDOWN =====================
 
-@router.message(Command("shutdown"), F.chat.type == ChatType.PRIVATE)
-async def cmd_shutdown(message: Message):
-    if not is_owner(message.from_user.id):
+@router.callback_query(F.data == "shutdown_confirm")
+async def shutdown_confirm(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
         return
+
+    await callback.answer("🛑 Выключаю бота...")
 
     users = get_all_users()
     sent = 0
     for user in users:
         try:
-            await message.bot.send_message(
+            await callback.bot.send_message(
                 chat_id=user["user_id"],
                 text="🔧 <b>Бот временно отключён на техническое обслуживание.</b>\n\nМы скоро вернёмся!",
                 parse_mode="HTML"
@@ -891,13 +1219,13 @@ async def cmd_shutdown(message: Message):
             pass
         await asyncio.sleep(0.05)
 
-    await message.answer(
+    await callback.message.edit_text(
         f"🛑 <b>Бот выключается</b>\n\nУведомлено пользователей: {sent}\nПроцесс завершается...",
         parse_mode="HTML"
     )
 
     await asyncio.sleep(1)
-    await message.bot.session.close()
+    await callback.bot.session.close()
     loop = asyncio.get_event_loop()
     loop.stop()
 
@@ -933,7 +1261,6 @@ async def group_remove_command(message: Message):
                     target_user_id = udata["user_id"]
                     target_name = udata.get("full_name", "?")
             else:
-                # по названию
                 slot = dl_find_slot_by_name(arg, year)
                 if slot:
                     reg = get_registrations().get(slot["key"])
