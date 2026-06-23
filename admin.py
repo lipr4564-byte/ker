@@ -1,5 +1,5 @@
 """
-Административная панель — полный функционал с корректным shutdown
+Административная панель — полный функционал с управлением статусом бота
 """
 
 import asyncio
@@ -26,7 +26,7 @@ from database import (
     get_reg_message_id, set_reg_message_id,
     increment_relocations, wipe_all_registrations,
     get_user_data, register_slot, get_users_db, save_users_db,
-    get_db, save_db
+    get_db, save_db, get_bot_status, set_bot_status
 )
 from data_loader import (
     find_slot_by_key, get_data_year, reload_caches,
@@ -86,6 +86,8 @@ async def cmd_admin(message: Message, state: FSMContext):
     regs = get_registrations()
     users = get_all_users()
     conquered = get_conquered_slots()
+    status = get_bot_status()
+    status_text = "🟢 работает" if status == "on" else "🔴 техобслуживание"
 
     year_info = f"<b>{year}</b>"
     if data_year != year:
@@ -96,7 +98,8 @@ async def cmd_admin(message: Message, state: FSMContext):
         f"{pe('📅')} Текущий год: {year_info}\n"
         f"{pe('👥')} Пользователей в базе: <b>{len(users)}</b>\n"
         f"{pe('📋')} Активных регистраций: <b>{len(regs)}</b>\n"
-        f"🏴 Завоёванных слотов: <b>{len(conquered)}</b>",
+        f"🏴 Завоёванных слотов: <b>{len(conquered)}</b>\n"
+        f"🤖 Статус бота: <b>{status_text}</b>",
         parse_mode="HTML",
         reply_markup=admin_panel_kb()
     )
@@ -116,6 +119,8 @@ async def back_admin(callback: CallbackQuery, state: FSMContext):
     regs = get_registrations()
     users = get_all_users()
     conquered = get_conquered_slots()
+    status = get_bot_status()
+    status_text = "🟢 работает" if status == "on" else "🔴 техобслуживание"
 
     year_info = f"<b>{year}</b>"
     if data_year != year:
@@ -126,7 +131,8 @@ async def back_admin(callback: CallbackQuery, state: FSMContext):
         f"{pe('📅')} Текущий год: {year_info}\n"
         f"{pe('👥')} Пользователей в базе: <b>{len(users)}</b>\n"
         f"{pe('📋')} Активных регистраций: <b>{len(regs)}</b>\n"
-        f"🏴 Завоёванных слотов: <b>{len(conquered)}</b>",
+        f"🏴 Завоёванных слотов: <b>{len(conquered)}</b>\n"
+        f"🤖 Статус бота: <b>{status_text}</b>",
         parse_mode="HTML",
         reply_markup=admin_panel_kb()
     )
@@ -1166,7 +1172,7 @@ async def handle_wipe_confirm(message: Message, state: FSMContext):
     log.info(f"Владелец сбросил все регистрации. Удалено: {count}")
 
 
-# ===================== ВЫКЛЮЧЕНИЕ БОТА (КОРРЕКТНОЕ) =====================
+# ===================== ВЫКЛЮЧЕНИЕ БОТА (ТЕХОБСЛУЖИВАНИЕ) =====================
 
 @router.callback_query(F.data == "admin_shutdown")
 async def admin_shutdown(callback: CallbackQuery, state: FSMContext):
@@ -1184,9 +1190,10 @@ async def admin_shutdown(callback: CallbackQuery, state: FSMContext):
     )
 
     await callback.message.edit_text(
-        f"🛑 <b>Выключение бота</b>\n\n"
+        f"🛑 <b>Выключение бота (техобслуживание)</b>\n\n"
         f"Вы уверены, что хотите выключить бота?\n"
-        f"Все пользователи получат уведомление о техническом обслуживании.",
+        f"Все пользователи получат уведомление о техническом обслуживании.\n\n"
+        f"Бот перестанет отвечать на команды, пока вы не включите его снова.",
         parse_mode="HTML",
         reply_markup=keyboard
     )
@@ -1199,9 +1206,10 @@ async def shutdown_confirm(callback: CallbackQuery):
         await callback.answer("⛔ Нет доступа!")
         return
 
-    await callback.answer("🛑 Выключаю бота...")
+    # Устанавливаем статус OFF
+    set_bot_status("off")
 
-    # Рассылка уведомлений
+    # Рассылаем уведомление
     users = get_all_users()
     sent = 0
     for user in users:
@@ -1217,20 +1225,55 @@ async def shutdown_confirm(callback: CallbackQuery):
         await asyncio.sleep(0.05)
 
     await callback.message.edit_text(
-        f"🛑 <b>Бот выключается</b>\n\nУведомлено пользователей: {sent}\nПроцесс завершается...",
-        parse_mode="HTML"
+        f"🛑 <b>Бот выключен</b>\n\n"
+        f"Уведомлено пользователей: {sent}\n"
+        f"Теперь бот не отвечает на команды.\n"
+        f"Чтобы включить, нажмите «Включить бота» в админ-панели.",
+        parse_mode="HTML",
+        reply_markup=admin_panel_kb()
     )
+    await callback.answer("Бот выключен")
 
-    # Даём время на отправку
-    await asyncio.sleep(1)
 
-    # Закрываем сессию бота
-    await callback.bot.session.close()
+# ===================== ВКЛЮЧЕНИЕ БОТА =====================
 
-    # Принудительно завершаем процесс без ошибок
-    # Используем call_later, чтобы дать время на отправку последнего ответа
-    loop = asyncio.get_event_loop()
-    loop.call_later(0.5, os._exit, 0)
+@router.callback_query(F.data == "admin_start_bot")
+async def admin_start_bot(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!")
+        return
+
+    # Устанавливаем статус ON
+    set_bot_status("on")
+
+    # Рассылаем уведомление
+    users = get_all_users()
+    sent = 0
+    for user in users:
+        try:
+            await callback.bot.send_message(
+                chat_id=user["user_id"],
+                text="🟢 <b>Бот снова работает!</b>\n\n"
+                     "Техническое обслуживание завершено.\n"
+                     "Все функции доступны. Приятной игры!",
+                parse_mode="HTML"
+            )
+            sent += 1
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+
+    # Обновляем сообщение регистрации
+    await _update_reg_msg(callback.bot, get_current_year())
+
+    await callback.message.edit_text(
+        f"✅ <b>Бот включён</b>\n\n"
+        f"Уведомлено пользователей: {sent}\n"
+        f"Бот снова отвечает на команды.",
+        parse_mode="HTML",
+        reply_markup=admin_panel_kb()
+    )
+    await callback.answer("Бот включён")
 
 
 # ===================== КОМАНДА В ГРУППЕ !снятие =====================
