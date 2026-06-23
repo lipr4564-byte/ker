@@ -1,29 +1,30 @@
 """
-Обработчики команд администратора
+Административная панель — все команды и callback'и
 """
 
+import asyncio
 import os
-import io
-from html import escape
+import uuid
 from datetime import datetime
+from html import escape
 
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.enums import ChatType
 
-from config import OWNER_ID, DATA_YEARS, GROUP_ID
+from config import OWNER_ID, GROUP_ID, DATA_YEARS
 from database import (
     get_current_year, set_year, get_all_users,
-    get_registrations, find_slot_by_name, unregister_slot,
-    unregister_user, get_user_registration, get_user_by_username,
+    get_registrations, unregister_slot, unregister_user,
+    get_user_registration, get_user_by_username,
     conquer_slot, unconquer_slot, get_conquered_slots,
     find_conquered_by_name, is_slot_conquered,
     get_reg_message_id, set_reg_message_id,
     increment_relocations, wipe_all_registrations,
-    get_user_data
+    get_user_data, register_slot
 )
 from data_loader import (
     find_slot_by_key, get_data_year, reload_caches,
@@ -42,7 +43,6 @@ router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_remove_id = State()
-    waiting_remove_confirm = State()
     waiting_custom_year = State()
     waiting_conquer_name = State()
     waiting_unconquer_name = State()
@@ -59,13 +59,13 @@ def esc(text: str) -> str:
     return escape(str(text))
 
 
-async def _update_reg_msg(bot, year: int):
-    """Обновить сообщение регистрации в теме."""
-    from handlers.registration import update_reg_message
+async def _update_reg_msg(bot: Bot, year: int):
+    """Обновить или создать сообщение регистрации в теме."""
+    from registration import update_reg_message
     await update_reg_message(bot, year)
 
 
-# ===================== ADMIN ПАНЕЛЬ =====================
+# ===================== ВХОД В АДМИНКУ =====================
 
 @router.message(Command("admin"), F.chat.type == ChatType.PRIVATE)
 async def cmd_admin(message: Message, state: FSMContext):
@@ -93,6 +93,8 @@ async def cmd_admin(message: Message, state: FSMContext):
         reply_markup=admin_panel_kb()
     )
 
+
+# ===================== ВОЗВРАТ В АДМИНКУ =====================
 
 @router.callback_query(F.data == "back_admin")
 async def back_admin(callback: CallbackQuery, state: FSMContext):
@@ -131,10 +133,9 @@ async def admin_year(callback: CallbackQuery):
         await callback.answer("⛔ Нет доступа!")
         return
 
-    year = get_current_year()
     await callback.message.edit_text(
         f"{pe('📅')} <b>Выбор года вайпа</b>\n\n"
-        f"Текущий год: <b>{year}</b>\n\n"
+        f"Текущий год: <b>{get_current_year()}</b>\n\n"
         f"Выбери новый год:",
         parse_mode="HTML",
         reply_markup=year_select_kb()
@@ -210,21 +211,17 @@ async def handle_custom_year(message: Message, state: FSMContext):
 
     note = ""
     if data_year != new_year:
-        note = (
-            f"\n{pe('📋')} Слоты берутся из <b>{data_year}</b> "
-            f"(см. <code>data/year_map.txt</code>)"
-        )
+        note = f"\n{pe('📋')} Слоты берутся из <b>{data_year}</b> (см. year_map.txt)"
 
     await message.answer(
-        f"{pe('✅')} Год изменён: <b>{old_year}</b> → <b>{new_year}</b>"
-        f"{note}\n\nСообщение регистрации обновлено.",
+        f"{pe('✅')} Год изменён: <b>{old_year}</b> → <b>{new_year}</b>{note}\n\nСообщение обновлено.",
         parse_mode="HTML",
         reply_markup=admin_panel_kb(),
     )
     await state.clear()
 
 
-# ===================== ЗАВОЁВАНО =====================
+# ===================== ЗАВОЁВАНО / СНЯТЬ ЗАВОЁВАНО =====================
 
 @router.callback_query(F.data == "admin_conquer")
 async def admin_conquer(callback: CallbackQuery, state: FSMContext):
@@ -235,17 +232,13 @@ async def admin_conquer(callback: CallbackQuery, state: FSMContext):
     conquered = get_conquered_slots()
     conquered_list = ""
     if conquered:
-        lines = [
-            f"🏴 {info['slot_flag']} {info['slot_name']}"
-            for info in conquered.values()
-        ]
+        lines = [f"🏴 {info['slot_flag']} {info['slot_name']}" for info in conquered.values()]
         conquered_list = "\n\nСейчас завоёваны:\n" + "\n".join(lines)
 
     await state.set_state(AdminStates.waiting_conquer_name)
     await callback.message.edit_text(
         f"🏴 <b>Завоёвано</b>\n\n"
-        f"Введи название страны/ЧВК/организации, "
-        f"которую хочешь пометить как завоёванную.\n"
+        f"Введи название страны/ЧВК/организации, которую хочешь пометить как завоёванную.\n"
         f"Игроки не смогут её выбрать.{conquered_list}",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
@@ -266,15 +259,11 @@ async def handle_conquer_name(message: Message, state: FSMContext):
     slot = dl_find_slot_by_name(text, data_year)
     if not slot:
         all_slots = get_slots_for_year(data_year)
-        slot = next(
-            (s for s in all_slots if text.lower() in s["name"].lower()),
-            None
-        )
+        slot = next((s for s in all_slots if text.lower() in s["name"].lower()), None)
 
     if not slot:
         await message.answer(
-            f"{pe('❓')} Не нашёл слот <b>{esc(text)}</b>.\n"
-            f"Проверь правильность написания.",
+            f"{pe('❓')} Не нашёл слот <b>{esc(text)}</b>.\nПроверь написание.",
             parse_mode="HTML",
             reply_markup=back_to_admin_kb()
         )
@@ -282,8 +271,7 @@ async def handle_conquer_name(message: Message, state: FSMContext):
 
     if is_slot_conquered(slot["key"]):
         await message.answer(
-            f"{pe('⚠️')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> "
-            f"уже помечена как завоёванная.",
+            f"{pe('⚠️')} <b>{esc(slot['flag'])} {esc(slot['name'])}</b> уже завоёвана.",
             parse_mode="HTML",
             reply_markup=admin_panel_kb()
         )
@@ -294,9 +282,7 @@ async def handle_conquer_name(message: Message, state: FSMContext):
     await _update_reg_msg(bot, year)
 
     await message.answer(
-        f"🏴 <b>{esc(slot['flag'])} {esc(slot['name'])}</b> "
-        f"помечена как завоёванная.\n"
-        f"Игроки не смогут её выбрать.",
+        f"🏴 <b>{esc(slot['flag'])} {esc(slot['name'])}</b> помечена как завоёванная.",
         parse_mode="HTML",
         reply_markup=admin_panel_kb()
     )
@@ -314,17 +300,13 @@ async def admin_unconquer(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Нет завоёванных слотов!", show_alert=True)
         return
 
-    lines = [
-        f"🏴 {info['slot_flag']} {info['slot_name']}"
-        for info in conquered.values()
-    ]
+    lines = [f"🏴 {info['slot_flag']} {info['slot_name']}" for info in conquered.values()]
     conquered_list = "\n".join(lines)
 
     await state.set_state(AdminStates.waiting_unconquer_name)
     await callback.message.edit_text(
         f"{pe('✅')} <b>Снять метку завоёвано</b>\n\n"
-        f"Текущие завоёванные слоты:\n{conquered_list}\n\n"
-        f"Введи название слота для снятия метки:",
+        f"Текущие завоёванные:\n{conquered_list}\n\nВведи название слота для снятия:",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
     )
@@ -354,9 +336,7 @@ async def handle_unconquer_name(message: Message, state: FSMContext):
     await _update_reg_msg(bot, year)
 
     await message.answer(
-        f"{pe('✅')} Метка снята с "
-        f"<b>{esc(info['slot_flag'])} {esc(info['slot_name'])}</b>.\n"
-        f"Слот снова доступен для выбора.",
+        f"{pe('✅')} Метка снята с <b>{esc(info['slot_flag'])} {esc(info['slot_name'])}</b>.",
         parse_mode="HTML",
         reply_markup=admin_panel_kb()
     )
@@ -383,10 +363,7 @@ async def cmd_users(message: Message):
 
     for u in users:
         reg = get_user_registration(u["user_id"])
-        reg_info = (
-            f"Позиция: {reg['slot_flag']} {reg['slot_name']}"
-            if reg else "Позиция: нет"
-        )
+        reg_info = f"Позиция: {reg['slot_flag']} {reg['slot_name']}" if reg else "Позиция: нет"
         lines.extend([
             f"ID: {u['user_id']}",
             f"Имя: {u.get('full_name', 'нет')}",
@@ -400,9 +377,7 @@ async def cmd_users(message: Message):
 
     content = "\n".join(lines)
     file = BufferedInputFile(content.encode("utf-8"), filename="users.txt")
-    await message.answer_document(
-        file, caption=f"👥 Пользователей: {len(users)}"
-    )
+    await message.answer_document(file, caption=f"👥 Пользователей: {len(users)}")
 
 
 @router.callback_query(F.data == "admin_users")
@@ -424,10 +399,7 @@ async def admin_users(callback: CallbackQuery):
 
     for u in users:
         reg = get_user_registration(u["user_id"])
-        reg_info = (
-            f"Позиция: {reg['slot_flag']} {reg['slot_name']}"
-            if reg else "Позиция: нет"
-        )
+        reg_info = f"Позиция: {reg['slot_flag']} {reg['slot_name']}" if reg else "Позиция: нет"
         lines.extend([
             f"ID: {u['user_id']}",
             f"Имя: {u.get('full_name', 'нет')}",
@@ -441,9 +413,7 @@ async def admin_users(callback: CallbackQuery):
 
     content = "\n".join(lines)
     file = BufferedInputFile(content.encode("utf-8"), filename="users.txt")
-    await callback.message.answer_document(
-        file, caption=f"👥 Пользователей: {len(users)}"
-    )
+    await callback.message.answer_document(file, caption=f"👥 Пользователей: {len(users)}")
     await callback.answer()
 
 
@@ -457,8 +427,7 @@ async def admin_broadcast(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(AdminStates.waiting_broadcast)
     await callback.message.edit_text(
-        f"{pe('📢')} <b>Рассылка</b>\n\n"
-        f"Напиши текст сообщения для рассылки всем пользователям:",
+        f"{pe('📢')} <b>Рассылка</b>\n\nНапиши текст сообщения для рассылки всем пользователям:",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
     )
@@ -477,9 +446,7 @@ async def handle_broadcast(message: Message, state: FSMContext):
     sent = 0
     failed = 0
 
-    status_msg = await message.answer(
-        f"📢 Рассылка начата... 0/{len(users)}"
-    )
+    status_msg = await message.answer(f"📢 Рассылка начата... 0/{len(users)}")
 
     for user in users:
         try:
@@ -494,9 +461,7 @@ async def handle_broadcast(message: Message, state: FSMContext):
 
         if (sent + failed) % 10 == 0:
             try:
-                await status_msg.edit_text(
-                    f"📢 Рассылка... {sent + failed}/{len(users)}"
-                )
+                await status_msg.edit_text(f"📢 Рассылка... {sent + failed}/{len(users)}")
             except Exception:
                 pass
 
@@ -521,8 +486,7 @@ async def admin_remove(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(AdminStates.waiting_remove_id)
     await callback.message.edit_text(
-        f"{pe('🗑️')} <b>Снятие пользователя</b>\n\n"
-        f"Введи ID, @юзернейм или название страны/позиции:",
+        f"{pe('🗑️')} <b>Снятие пользователя</b>\n\nВведи ID, @юзернейм или название страны/позиции:",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
     )
@@ -557,11 +521,13 @@ async def handle_remove_id(message: Message, state: FSMContext):
                 removed_user_id = user_data["user_id"]
 
         if not removed:
-            result = find_slot_by_name(text)
+            result = dl_find_slot_by_name(text, year)  # ищем по названию в текущем году
             if result:
-                slot_key, reg_data = result
-                removed = unregister_slot(slot_key)
-                removed_user_id = reg_data.get("user_id")
+                slot = result
+                reg = get_registrations().get(slot["key"])
+                if reg:
+                    removed = unregister_slot(slot["key"])
+                    removed_user_id = reg.get("user_id")
 
     if removed:
         slot_name = removed.get("slot_name", "?")
@@ -578,18 +544,14 @@ async def handle_remove_id(message: Message, state: FSMContext):
             try:
                 await bot.send_message(
                     chat_id=removed_user_id,
-                    text=(
-                        f"{pe('⚠️')} Администрация сняла вас с позиции "
-                        f"<b>{esc(slot_name)}</b>."
-                    ),
+                    text=f"{pe('⚠️')} Администрация сняла вас с позиции <b>{esc(slot_name)}</b>.",
                     parse_mode="HTML"
                 )
             except Exception:
                 pass
 
         await message.answer(
-            f"{pe('✅')} Снят с <b>{esc(slot_name)}</b>: "
-            f"<code>{esc(user_name)}</code>",
+            f"{pe('✅')} Снят с <b>{esc(slot_name)}</b>: <code>{esc(user_name)}</code>",
             parse_mode="HTML",
             reply_markup=admin_panel_kb()
         )
@@ -622,8 +584,7 @@ async def admin_wipe_regs(callback: CallbackQuery, state: FSMContext):
         f"▪️ Удалит ВСЕ регистрации\n"
         f"▪️ Обнулит счётчики пересадок у всех\n"
         f"▪️ Обновит сообщение в теме\n\n"
-        f"Для подтверждения напиши точно:\n"
-        f"<code>СБРОС</code>",
+        f"Для подтверждения напиши точно:\n<code>СБРОС</code>",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
     )
@@ -659,7 +620,6 @@ async def handle_wipe_confirm(message: Message, state: FSMContext):
         reply_markup=admin_panel_kb()
     )
     await state.clear()
-
     log.info(f"Владелец сбросил все регистрации. Удалено: {count}")
 
 
@@ -673,8 +633,7 @@ async def admin_manual_reg(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(AdminStates.waiting_manual_reg_user)
     await callback.message.edit_text(
-        f"👤 <b>Ручная регистрация</b>\n\n"
-        f"Введи ID или @юзернейм игрока:",
+        f"👤 <b>Ручная регистрация</b>\n\nВведи ID или @юзернейм игрока:",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
     )
@@ -692,18 +651,13 @@ async def handle_manual_reg_user(message: Message, state: FSMContext):
         user_id = int(text)
         user_data = get_user_data(user_id)
         if not user_data:
-            user_data = {
-                "user_id": user_id,
-                "username": "",
-                "full_name": str(user_id)
-            }
+            user_data = {"user_id": user_id, "username": "", "full_name": str(user_id)}
     else:
         uname = text.lstrip("@")
         user_data = get_user_by_username(uname)
         if not user_data:
             await message.answer(
-                f"❌ Пользователь <code>{esc(text)}</code> не найден.\n"
-                f"Попробуй ввести числовой ID.",
+                f"❌ Пользователь <code>{esc(text)}</code> не найден.\nПопробуй числовой ID.",
                 parse_mode="HTML",
                 reply_markup=back_to_admin_kb()
             )
@@ -716,17 +670,12 @@ async def handle_manual_reg_user(message: Message, state: FSMContext):
     )
     await state.set_state(AdminStates.waiting_manual_reg_slot)
 
-    display = (
-        f"@{user_data['username']}"
-        if user_data.get("username")
-        else str(user_data["user_id"])
-    )
+    display = f"@{user_data['username']}" if user_data.get("username") else str(user_data["user_id"])
     fn = esc(user_data.get("full_name", str(user_data["user_id"])))
 
     await message.answer(
         f"✅ Игрок: <b>{fn}</b> ({display})\n\n"
-        f"Введи название позиции для регистрации:\n"
-        f"<i>Например: Польша / ЧВК Вагнер / МО России</i>",
+        f"Введи название позиции для регистрации (например: Польша / ЧВК Вагнер / МО России):",
         parse_mode="HTML",
         reply_markup=back_to_admin_kb()
     )
@@ -742,18 +691,13 @@ async def handle_manual_reg_slot(message: Message, state: FSMContext):
     data_year = get_data_year(year)
     bot = message.bot
 
-    import uuid
-    from database import register_slot
-
     slot = dl_find_slot_by_name(text, data_year)
     if not slot:
         all_slots = get_slots_for_year(data_year)
-        slot = next(
-            (s for s in all_slots if text.lower() in s["name"].lower()),
-            None
-        )
+        slot = next((s for s in all_slots if text.lower() in s["name"].lower()), None)
 
     if not slot:
+        # Создаём кастомный слот
         slot = {
             "key": f"manual_{uuid.uuid4().hex[:8]}",
             "name": text,
@@ -768,6 +712,7 @@ async def handle_manual_reg_slot(message: Message, state: FSMContext):
     username = data["manual_username"]
     full_name = data["manual_full_name"]
 
+    # Снимаем, если уже зарегистрирован
     current = get_user_registration(user_id)
     if current:
         unregister_slot(current["slot_key"])
@@ -794,10 +739,7 @@ async def handle_manual_reg_slot(message: Message, state: FSMContext):
     try:
         await bot.send_message(
             chat_id=user_id,
-            text=(
-                f"📍 Администрация зарегистрировала вас за:\n"
-                f"<b>{esc(slot['flag'])} {esc(slot['name'])}</b>"
-            ),
+            text=f"📍 Администрация зарегистрировала вас за:\n<b>{esc(slot['flag'])} {esc(slot['name'])}</b>",
             parse_mode="HTML"
         )
     except Exception:
@@ -872,12 +814,10 @@ async def admin_stats(callback: CallbackQuery):
 
 @router.message(Command("fixdb"), F.chat.type == ChatType.PRIVATE)
 async def cmd_fixdb(message: Message):
-    """Починить базу — обновить username/full_name в регистрациях из users.json."""
     if not is_owner(message.from_user.id):
         return
 
     import json
-
     DB_FILE = "data/database.json"
     USERS_FILE = "data/users.json"
 
@@ -909,41 +849,63 @@ async def cmd_fixdb(message: Message):
             reg["username"] = username
             changed = True
 
-        if (
-            not reg.get("full_name")
-            or reg.get("full_name") == str(user_id)
-        ) and full_name:
+        if (not reg.get("full_name") or reg.get("full_name") == str(user_id)) and full_name:
             reg["full_name"] = full_name
             changed = True
 
         if changed:
             fixed += 1
             report_lines.append(
-                f"✅ {esc(reg.get('slot_name', slot_key))}: "
-                f"@{username or 'нет'} / {esc(full_name)}"
+                f"✅ {esc(reg.get('slot_name', slot_key))}: @{username or 'нет'} / {esc(full_name)}"
             )
 
     save(DB_FILE, db)
 
-    report = (
-        "\n".join(report_lines)
-        if report_lines
-        else "Все записи уже корректны"
-    )
+    report = "\n".join(report_lines) if report_lines else "Все записи уже корректны"
 
     await message.answer(
         f"🔧 <b>Починка БД завершена</b>\n\n"
-        f"Исправлено записей: <b>{fixed}</b>\n\n"
-        f"{report}",
+        f"Исправлено записей: <b>{fixed}</b>\n\n{report}",
         parse_mode="HTML"
     )
 
 
-# ===================== СНЯТИЕ В ГРУППЕ (!снятие) =====================
+# ===================== КОМАНДА SHUTDOWN =====================
+
+@router.message(Command("shutdown"), F.chat.type == ChatType.PRIVATE)
+async def cmd_shutdown(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+
+    users = get_all_users()
+    sent = 0
+    for user in users:
+        try:
+            await message.bot.send_message(
+                chat_id=user["user_id"],
+                text="🔧 <b>Бот временно отключён на техническое обслуживание.</b>\n\nМы скоро вернёмся!",
+                parse_mode="HTML"
+            )
+            sent += 1
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+
+    await message.answer(
+        f"🛑 <b>Бот выключается</b>\n\nУведомлено пользователей: {sent}\nПроцесс завершается...",
+        parse_mode="HTML"
+    )
+
+    await asyncio.sleep(1)
+    await message.bot.session.close()
+    loop = asyncio.get_event_loop()
+    loop.stop()
+
+
+# ===================== КОМАНДА В ГРУППЕ !снятие =====================
 
 @router.message(F.text.lower().startswith("!снятие"))
 async def group_remove_command(message: Message):
-    """Работает ТОЛЬКО в рп-группе и только для владельца."""
     if message.chat.id != GROUP_ID:
         return
     if message.from_user.id != OWNER_ID:
@@ -971,27 +933,29 @@ async def group_remove_command(message: Message):
                     target_user_id = udata["user_id"]
                     target_name = udata.get("full_name", "?")
             else:
-                result = find_slot_by_name(arg)
-                if result:
-                    slot_key, reg_data = result
-                    removed = unregister_slot(slot_key)
-                    if removed:
-                        await log_unregister(
-                            bot,
-                            reg_data.get("user_id", 0),
-                            removed.get("username", ""),
-                            removed.get("full_name", "?"),
-                            removed.get("slot_name", "?"),
-                            by_admin=True
-                        )
-                        await _update_reg_msg(bot, year)
-                        await message.reply(
-                            f"✅ Снял с <b>{esc(removed.get('slot_name', '?'))}</b>",
-                            parse_mode="HTML"
-                        )
-                    else:
-                        await message.reply("❌ Пользователь не зарегистрирован")
-                    return
+                # по названию
+                slot = dl_find_slot_by_name(arg, year)
+                if slot:
+                    reg = get_registrations().get(slot["key"])
+                    if reg:
+                        removed = unregister_slot(slot["key"])
+                        if removed:
+                            await log_unregister(
+                                bot,
+                                reg.get("user_id", 0),
+                                removed.get("username", ""),
+                                removed.get("full_name", "?"),
+                                removed.get("slot_name", "?"),
+                                by_admin=True
+                            )
+                            await _update_reg_msg(bot, year)
+                            await message.reply(
+                                f"✅ Снял с <b>{esc(removed.get('slot_name', '?'))}</b>",
+                                parse_mode="HTML"
+                            )
+                        else:
+                            await message.reply("❌ Пользователь не зарегистрирован")
+                        return
 
     if target_user_id:
         reg = get_user_registration(target_user_id)
@@ -1008,17 +972,11 @@ async def group_remove_command(message: Message):
                     by_admin=True
                 )
                 await _update_reg_msg(bot, year)
-                await message.reply(
-                    f"✅ Снял с <b>{esc(slot_name)}</b>",
-                    parse_mode="HTML"
-                )
+                await message.reply(f"✅ Снял с <b>{esc(slot_name)}</b>", parse_mode="HTML")
                 try:
                     await bot.send_message(
                         chat_id=target_user_id,
-                        text=(
-                            f"{pe('⚠️')} Администрация сняла вас с позиции "
-                            f"<b>{esc(slot_name)}</b>."
-                        ),
+                        text=f"{pe('⚠️')} Администрация сняла вас с позиции <b>{esc(slot_name)}</b>.",
                         parse_mode="HTML"
                     )
                 except Exception:
