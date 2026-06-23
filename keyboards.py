@@ -5,7 +5,7 @@
 import uuid
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from database import is_slot_occupied, get_current_year, is_slot_conquered
+from database import is_slot_occupied, get_current_year, is_slot_conquered, get_bot_status
 from data_loader import (
     get_pmcs, get_mo, get_vice, get_terror, get_other,
     get_interesting_countries,
@@ -183,7 +183,14 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
     builder.row(btn("📜 Посмотреть логи", "admin_logs"))
     builder.row(btn("🔄 Перезагрузить кэш", "admin_reload_cache"))
     builder.row(btn("⚠️ Сбросить все регистрации", "admin_wipe_regs"))
-    builder.row(btn("🛑 Выключить бота", "admin_shutdown"))
+    
+    # Кнопка управления статусом
+    status = get_bot_status()
+    if status == "on":
+        builder.row(btn("🛑 Выключить бота", "admin_shutdown"))
+    else:
+        builder.row(btn("✅ Включить бота", "admin_start_bot"))
+    
     return builder.as_markup()
 
 
