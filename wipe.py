@@ -29,7 +29,6 @@ def esc(text: str) -> str:
 
 
 async def _broadcast(bot: Bot, text: str) -> tuple:
-    """Рассылка всем пользователям. Возвращает (sent, failed)."""
     users = get_all_users()
     sent = 0
     failed = 0
@@ -52,10 +51,10 @@ async def _broadcast(bot: Bot, text: str) -> tuple:
 async def execute_wipe(bot: Bot, year: int):
     """
     Выполнить вайп:
-    1. Сброс всех регистраций и лимитов
+    1. Сброс регистраций и лимитов
     2. Смена года
     3. Открытие регистрации
-    4. Новое сообщение в теме
+    4. Обновление существующего сообщения (НЕ создание нового)
     5. Рассылка
     """
     log.info(f"Выполняю вайп! Год: {year}")
@@ -71,25 +70,11 @@ async def execute_wipe(bot: Bot, year: int):
     # 3. Открываем регистрацию
     set_registration_open(True)
 
-    # 4. Сбрасываем ID сообщения — пошлём новое
-    set_reg_message_id(None)
+    # 4. ОБНОВЛЯЕМ СУЩЕСТВУЮЩЕЕ СООБЩЕНИЕ (не создаём новое)
+    from registration import update_reg_message
+    await update_reg_message(bot, year)
 
-    # 5. Отправляем новое сообщение регистрации в тему
-    try:
-        from messages import build_reg_message
-        text = build_reg_message(year)
-        sent_msg = await bot.send_message(
-            chat_id=GROUP_ID,
-            message_thread_id=TOPIC_ID,
-            text=text,
-            parse_mode="HTML"
-        )
-        set_reg_message_id(sent_msg.message_id)
-        log.info(f"Новое сообщение регистрации после вайпа: {sent_msg.message_id}")
-    except Exception as e:
-        log.error(f"Ошибка обновления сообщения после вайпа: {e}")
-
-    # 6. Рассылаем всем уведомление об открытии
+    # 5. Рассылаем уведомление
     sent, failed = await _broadcast(
         bot,
         f"🟢 <b>РЕГИСТРАЦИЯ ОТКРЫТА!</b>\n\n"
@@ -104,9 +89,7 @@ async def execute_wipe(bot: Bot, year: int):
 
 
 async def wipe_scheduler(bot: Bot):
-    """
-    Фоновая задача — проверяет запланированный вайп каждые 30 секунд.
-    """
+    """Фоновая задача — проверяет запланированный вайп каждые 30 секунд."""
     log.info("Планировщик вайпа активен")
 
     while True:
@@ -158,10 +141,6 @@ async def wipe_scheduler(bot: Bot):
 
 @router.message(Command("wipe"), F.chat.type == ChatType.PRIVATE)
 async def cmd_wipe(message: Message):
-    """
-    /wipe ДД.ММ.ГГГГ ЧЧ:ММ ГОД
-    Пример: /wipe 22.06.2026 20:00 2025
-    """
     if message.from_user.id != OWNER_ID:
         return
 
@@ -186,42 +165,35 @@ async def cmd_wipe(message: Message):
     year_str = args[2]
     dt_str = f"{date_str} {time_str}"
 
-    # Валидация года
     try:
         year = int(year_str)
         if not (1900 <= year <= 2100):
             raise ValueError("Год вне диапазона")
     except ValueError:
         await message.answer(
-            f"❌ Неверный год: <code>{esc(year_str)}</code>\n"
-            f"Укажи год от 1900 до 2100.",
+            f"❌ Неверный год: <code>{esc(year_str)}</code>\nУкажи год от 1900 до 2100.",
             parse_mode="HTML"
         )
         return
 
-    # Валидация даты
     try:
         planned_dt = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
     except ValueError:
         await message.answer(
             f"❌ Неверный формат даты: <code>{esc(dt_str)}</code>\n"
-            f"Нужно: ДД.ММ.ГГГГ ЧЧ:ММ\n"
-            f"Пример: <code>22.06.2026 20:00</code>",
+            f"Нужно: ДД.ММ.ГГГГ ЧЧ:ММ\nПример: <code>22.06.2026 20:00</code>",
             parse_mode="HTML"
         )
         return
 
-    # Проверяем что в будущем
     now = datetime.now()
     if planned_dt <= now:
         await message.answer(
-            f"❌ Дата должна быть в будущем!\n"
-            f"Сейчас: <code>{now.strftime('%d.%m.%Y %H:%M')}</code>",
+            f"❌ Дата должна быть в будущем!\nСейчас: <code>{now.strftime('%d.%m.%Y %H:%M')}</code>",
             parse_mode="HTML"
         )
         return
 
-    # Сохраняем
     set_planned_wipe(dt_str, year)
 
     diff = planned_dt - now
@@ -251,7 +223,6 @@ async def cmd_wipe(message: Message):
 
 @router.message(Command("wipecanel"), F.chat.type == ChatType.PRIVATE)
 async def cmd_wipe_cancel(message: Message):
-    """Отменить запланированный вайп."""
     if message.from_user.id != OWNER_ID:
         return
 
@@ -265,9 +236,7 @@ async def cmd_wipe_cancel(message: Message):
     cancel_wipe()
 
     await message.answer(
-        f"✅ <b>Вайп отменён</b>\n\n"
-        f"Был запланирован: <b>{planned_str}</b>\n"
-        f"Год: <b>{year}</b>",
+        f"✅ <b>Вайп отменён</b>\n\nБыл запланирован: <b>{planned_str}</b>\nГод: <b>{year}</b>",
         parse_mode="HTML"
     )
     log.info(f"Вайп отменён владельцем. Был: {planned_str}, год: {year}")
@@ -275,7 +244,6 @@ async def cmd_wipe_cancel(message: Message):
 
 @router.message(Command("wipestatus"), F.chat.type == ChatType.PRIVATE)
 async def cmd_wipe_status(message: Message):
-    """Статус запланированного вайпа."""
     if message.from_user.id != OWNER_ID:
         return
 
@@ -319,10 +287,6 @@ async def cmd_wipe_status(message: Message):
 
 @router.message(Command("wipenow"), F.chat.type == ChatType.PRIVATE)
 async def cmd_wipe_now(message: Message):
-    """
-    /wipenow ГОД — немедленный вайп без ожидания.
-    Пример: /wipenow 2025
-    """
     if message.from_user.id != OWNER_ID:
         return
 
@@ -330,8 +294,7 @@ async def cmd_wipe_now(message: Message):
 
     if not args:
         await message.answer(
-            f"❌ Укажи год!\n"
-            f"Пример: <code>/wipenow 2025</code>",
+            f"❌ Укажи год!\nПример: <code>/wipenow 2025</code>",
             parse_mode="HTML"
         )
         return
@@ -348,8 +311,7 @@ async def cmd_wipe_now(message: Message):
         return
 
     status_msg = await message.answer(
-        f"⚡ <b>Выполняю немедленный вайп...</b>\n"
-        f"Год: <b>{year}</b>",
+        f"⚡ <b>Выполняю немедленный вайп...</b>\nГод: <b>{year}</b>",
         parse_mode="HTML"
     )
 
