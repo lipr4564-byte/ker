@@ -1,9 +1,10 @@
 """
-Административная панель — полный функционал
+Административная панель — полный функционал с корректным shutdown
 """
 
 import asyncio
 import os
+import sys
 import uuid
 from datetime import datetime
 from html import escape
@@ -836,7 +837,6 @@ async def manage_ban(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка", show_alert=True)
         return
 
-    # Просто помечаем в базе (можно расширить)
     db = get_db()
     if "banned" not in db:
         db["banned"] = []
@@ -981,14 +981,11 @@ async def create_slot_flag(message: Message, state: FSMContext):
     year = get_current_year()
     data_year = get_data_year(year)
 
-    # Генерируем ключ
     key = f"custom_{uuid.uuid4().hex[:8]}"
 
-    # Сохраняем в countries.txt (в конец файла)
     with open("data/countries.txt", "a", encoding="utf-8") as f:
         f.write(f"\n{data_year}|{slot_type}|{flag}|{name}|нет")
 
-    # Перезагружаем кэш
     reload_caches()
 
     await message.answer(
@@ -1078,13 +1075,12 @@ async def admin_logs(callback: CallbackQuery):
         await callback.message.answer("❌ Лог-файл не найден.", reply_markup=back_to_admin_kb())
         return
 
-    # Читаем последние 50 строк
     with open(log_file, "r", encoding="utf-8") as f:
         lines = f.readlines()[-50:]
 
     content = "".join(lines)
     if len(content) > 4000:
-        content = content[-4000:]  # обрезаем для телеграма
+        content = content[-4000:]
 
     file = BufferedInputFile(content.encode("utf-8"), filename="bot.log")
     await callback.message.answer_document(
@@ -1170,7 +1166,7 @@ async def handle_wipe_confirm(message: Message, state: FSMContext):
     log.info(f"Владелец сбросил все регистрации. Удалено: {count}")
 
 
-# ===================== ВЫКЛЮЧЕНИЕ БОТА =====================
+# ===================== ВЫКЛЮЧЕНИЕ БОТА (КОРРЕКТНОЕ) =====================
 
 @router.callback_query(F.data == "admin_shutdown")
 async def admin_shutdown(callback: CallbackQuery, state: FSMContext):
@@ -1205,6 +1201,7 @@ async def shutdown_confirm(callback: CallbackQuery):
 
     await callback.answer("🛑 Выключаю бота...")
 
+    # Рассылка уведомлений
     users = get_all_users()
     sent = 0
     for user in users:
@@ -1224,10 +1221,16 @@ async def shutdown_confirm(callback: CallbackQuery):
         parse_mode="HTML"
     )
 
+    # Даём время на отправку
     await asyncio.sleep(1)
+
+    # Закрываем сессию бота
     await callback.bot.session.close()
+
+    # Принудительно завершаем процесс без ошибок
+    # Используем call_later, чтобы дать время на отправку последнего ответа
     loop = asyncio.get_event_loop()
-    loop.stop()
+    loop.call_later(0.5, os._exit, 0)
 
 
 # ===================== КОМАНДА В ГРУППЕ !снятие =====================
