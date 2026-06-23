@@ -108,12 +108,11 @@ async def on_startup(bot: Bot):
     log.info("Бот запускается...")
     os.makedirs("data", exist_ok=True)
 
-    # Запускаем планировщик вайпа в фоне, если доступен
     if wipe_scheduler:
         asyncio.create_task(wipe_scheduler(bot))
         log.info("Планировщик вайпа запущен")
 
-    # ПРОВЕРКА ДОСТУПНОСТИ ГРУППЫ
+    # Проверка группы
     try:
         chat = await bot.get_chat(GROUP_ID)
         log.info(f"Группа найдена: {chat.title} (ID: {GROUP_ID})")
@@ -142,13 +141,12 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    # ПОРЯДОК ВАЖЕН
     dp.include_router(leave_router)
-    dp.include_router(admin_router)   # admin первым — перехватывает /admin
+    dp.include_router(admin_router)
     if wipe_router:
-        dp.include_router(wipe_router) # команды /wipe, /wipecanel, /wipestatus
+        dp.include_router(wipe_router)
     dp.include_router(start_router)
-    dp.include_router(reg_router)     # последним
+    dp.include_router(reg_router)
 
     dp.startup.register(on_startup)
 
