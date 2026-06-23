@@ -3,7 +3,7 @@
 """
 
 import uuid
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database import is_slot_occupied, get_current_year, is_slot_conquered
 from data_loader import (
@@ -171,14 +171,19 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
     builder.row(btn("📋 Список пользователей", "admin_users"))
     builder.row(btn("📢 Рассылка", "admin_broadcast"))
     builder.row(btn("🗑️ Снять пользователя", "admin_remove"))
-    builder.row(btn("👤 Ручная регистрация", "admin_manual_reg"))      # НОВОЕ
+    builder.row(btn("👤 Ручная регистрация", "admin_manual_reg"))
+    builder.row(btn("🔧 Управление пользователем", "admin_user_manage"))
+    builder.row(btn("➕ Создать кастомный слот", "admin_create_slot"))
     builder.row(btn("🔄 Обновить сообщение регистрации", "admin_update_msg"))
     builder.row(btn("📊 Статистика", "admin_stats"))
     builder.row(
         btn("🏴 Завоёвано", "admin_conquer"),
         btn("✅ Снять завоёвано", "admin_unconquer"),
     )
-    builder.row(btn("⚠️ Сбросить все регистрации", "admin_wipe_regs"))  # НОВОЕ
+    builder.row(btn("📜 Посмотреть логи", "admin_logs"))
+    builder.row(btn("🔄 Перезагрузить кэш", "admin_reload_cache"))
+    builder.row(btn("⚠️ Сбросить все регистрации", "admin_wipe_regs"))
+    builder.row(btn("🛑 Выключить бота", "admin_shutdown"))
     return builder.as_markup()
 
 
