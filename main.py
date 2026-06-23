@@ -29,7 +29,6 @@ from registration import router as reg_router, update_reg_message
 from admin import router as admin_router
 from logger import log, send_log
 
-# Импорт вайпа (если файла нет – бот запустится без планировщика)
 try:
     from wipe import router as wipe_router, wipe_scheduler
 except ImportError:
@@ -113,6 +112,14 @@ async def on_startup(bot: Bot):
     if wipe_scheduler:
         asyncio.create_task(wipe_scheduler(bot))
         log.info("Планировщик вайпа запущен")
+
+    # ПРОВЕРКА ДОСТУПНОСТИ ГРУППЫ
+    try:
+        chat = await bot.get_chat(GROUP_ID)
+        log.info(f"Группа найдена: {chat.title} (ID: {GROUP_ID})")
+    except Exception as e:
+        log.error(f"Не удалось подключиться к группе {GROUP_ID}: {e}")
+        log.error("Проверьте настройки GROUP_ID и права бота.")
 
     year = get_current_year()
     await update_reg_message(bot, year)
