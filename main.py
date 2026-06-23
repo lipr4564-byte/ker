@@ -12,18 +12,16 @@ try:
 except ImportError:
     pass
 
-from aiogram import Bot, Dispatcher, Router
-from aiogram.types import ChatMemberUpdated
+from aiogram import Bot, Dispatcher, Router, BaseMiddleware
+from aiogram.types import Message, CallbackQuery, ChatMemberUpdated
 from aiogram.filters import ChatMemberUpdatedFilter
 from aiogram.filters.chat_member_updated import MEMBER, LEFT, KICKED
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from config import BOT_TOKEN, GROUP_ID, TOPIC_ID
-from database import (
-    get_current_year, get_user_registration, unregister_slot
-)
+from config import BOT_TOKEN, GROUP_ID, TOPIC_ID, OWNER_ID
+from database import get_current_year, get_user_registration, unregister_slot, get_bot_status
 from start import router as start_router
 from registration import router as reg_router, update_reg_message
 from admin import router as admin_router
@@ -44,6 +42,43 @@ logging.basicConfig(
         logging.FileHandler("data/bot.log", encoding="utf-8", mode="a")
     ]
 )
+
+
+# ===================== MIDDLEWARE ДЛЯ СТАТУСА =====================
+
+class BotStatusMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user_id = None
+        
+        # Определяем ID пользователя в зависимости от типа события
+        if isinstance(event, Message) and event.from_user:
+            user_id = event.from_user.id
+        elif isinstance(event, CallbackQuery) and event.from_user:
+            user_id = event.from_user.id
+        else:
+            # Для других типов (chat_member и т.п.) пропускаем
+            return await handler(event, data)
+
+        # Владелец всегда пропускается
+        if user_id == OWNER_ID:
+            return await handler(event, data)
+
+        # Проверяем статус
+        status = get_bot_status()
+        if status == "off":
+            log.info(f"⛔ Блокируем событие от {user_id}, статус OFF")
+            if isinstance(event, Message):
+                await event.answer(
+                    "🔧 <b>Бот временно отключён на техническое обслуживание.</b>\n\nМы скоро вернёмся!",
+                    parse_mode="HTML"
+                )
+            elif isinstance(event, CallbackQuery):
+                await event.answer("🔧 Бот на техобслуживании", show_alert=True)
+            return  # Прерываем обработку
+
+        # Если статус ON — передаём дальше
+        return await handler(event, data)
+
 
 # ===================== РОУТЕР ВЫХОДА =====================
 
@@ -112,16 +147,21 @@ async def on_startup(bot: Bot):
         asyncio.create_task(wipe_scheduler(bot))
         log.info("Планировщик вайпа запущен")
 
-    # Проверка группы
     try:
         chat = await bot.get_chat(GROUP_ID)
         log.info(f"Группа найдена: {chat.title} (ID: {GROUP_ID})")
     except Exception as e:
         log.error(f"Не удалось подключиться к группе {GROUP_ID}: {e}")
-        log.error("Проверьте настройки GROUP_ID и права бота.")
 
-    year = get_current_year()
-    await update_reg_message(bot, year)
+    # Проверяем статус при старте
+    status = get_bot_status()
+    log.info(f"Статус бота при старте: {status}")
+
+    if status == "on":
+        year = get_current_year()
+        await update_reg_message(bot, year)
+    else:
+        log.info("Бот запущен в режиме техобслуживания (выключен).")
 
     me = await bot.get_me()
     log.info(f"Бот @{me.username} запущен!")
@@ -141,6 +181,11 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
+    # Регистрируем middleware (ОБЯЗАТЕЛЬНО до включения роутеров)
+    dp.message.middleware(BotStatusMiddleware())
+    dp.callback_query.middleware(BotStatusMiddleware())
+
+    # Роутеры
     dp.include_router(leave_router)
     dp.include_router(admin_router)
     if wipe_router:
