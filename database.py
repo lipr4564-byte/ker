@@ -40,6 +40,8 @@ def get_db() -> dict:
         db["reg_message_id"] = None
     if "reg_open" not in db:
         db["reg_open"] = True
+    if "bot_status" not in db:
+        db["bot_status"] = "on"  # on - работает, off - техобслуживание
     return db
 
 
@@ -68,12 +70,10 @@ def set_reg_message_id(msg_id: Optional[int]):
 
 
 def is_registration_open() -> bool:
-    """Проверить открыта ли регистрация."""
     return get_db().get("reg_open", True)
 
 
 def set_registration_open(state: bool):
-    """Открыть или закрыть регистрацию."""
     db = get_db()
     db["reg_open"] = state
     save_db(db)
@@ -162,17 +162,12 @@ def unregister_user(user_id: int) -> Optional[dict]:
 
 
 def wipe_all_registrations() -> int:
-    """
-    Сбросить ВСЕ регистрации.
-    Возвращает количество удалённых записей.
-    """
     db = get_db()
     count = len(db["registrations"])
     db["registrations"] = {}
     db["reg_message_id"] = None
     save_db(db)
 
-    # Также сбрасываем счётчик пересадок у всех
     users_db = _load(USERS_FILE)
     for uid in users_db:
         users_db[uid]["relocations"] = 0
@@ -192,6 +187,20 @@ def find_slot_by_name(name: str) -> Optional[tuple]:
 
 def is_slot_occupied(slot_key: str) -> bool:
     return slot_key in get_registrations()
+
+
+# ===================== СТАТУС БОТА =====================
+
+def get_bot_status() -> str:
+    """Вернуть статус бота: 'on' или 'off'."""
+    return get_db().get("bot_status", "on")
+
+
+def set_bot_status(status: str):
+    """Установить статус бота: 'on' или 'off'."""
+    db = get_db()
+    db["bot_status"] = status
+    save_db(db)
 
 
 # ===================== ЗАВОЁВАННЫЕ СЛОТЫ =====================
@@ -254,7 +263,6 @@ def save_wipe_data(data: dict):
 
 
 def set_planned_wipe(dt_str: str, year: int):
-    """Сохранить запланированный вайп."""
     data = {
         "planned_at": dt_str,
         "year": year,
