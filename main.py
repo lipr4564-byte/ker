@@ -22,15 +22,20 @@ from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN, GROUP_ID, TOPIC_ID
 from database import (
-    get_current_year, get_reg_message_id, set_reg_message_id,
-    get_user_registration, unregister_slot
+    get_current_year, get_user_registration, unregister_slot
 )
-from messages import build_reg_message
-from handlers.start import router as start_router
-from handlers.registration import router as reg_router
-from handlers.admin import router as admin_router
-from handlers.wipe import router as wipe_router, wipe_scheduler
+from start import router as start_router
+from registration import router as reg_router, update_reg_message
+from admin import router as admin_router
 from logger import log, send_log
+
+# Импорт вайпа (если файла нет – бот запустится без планировщика)
+try:
+    from wipe import router as wipe_router, wipe_scheduler
+except ImportError:
+    wipe_router = None
+    wipe_scheduler = None
+    log.warning("wipe.py не найден, планировщик вайпа отключён")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,28 +72,8 @@ async def on_user_left(event: ChatMemberUpdated, bot: Bot):
         slot_flag = reg.get("slot_flag", "")
         unregister_slot(reg["slot_key"])
 
-        try:
-            year = get_current_year()
-            text = build_reg_message(year)
-            msg_id = get_reg_message_id()
-            if msg_id:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=GROUP_ID,
-                        message_id=msg_id,
-                        text=text,
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    sent = await bot.send_message(
-                        chat_id=GROUP_ID,
-                        message_thread_id=TOPIC_ID,
-                        text=text,
-                        parse_mode="HTML"
-                    )
-                    set_reg_message_id(sent.message_id)
-        except Exception as e:
-            log.error(f"Ошибка обновления сообщения после выхода: {e}")
+        year = get_current_year()
+        await update_reg_message(bot, year)
 
         log.info(
             f"LEAVE+UNREG: {full_name} (@{username}) [{user_id}] "
@@ -124,48 +109,13 @@ async def on_startup(bot: Bot):
     log.info("Бот запускается...")
     os.makedirs("data", exist_ok=True)
 
-    # Запускаем планировщик вайпа в фоне
-    asyncio.create_task(wipe_scheduler(bot))
-    log.info("Планировщик вайпа запущен")
+    # Запускаем планировщик вайпа в фоне, если доступен
+    if wipe_scheduler:
+        asyncio.create_task(wipe_scheduler(bot))
+        log.info("Планировщик вайпа запущен")
 
     year = get_current_year()
-    msg_id = get_reg_message_id()
-    text = build_reg_message(year)
-
-    if msg_id:
-        try:
-            await bot.edit_message_text(
-                chat_id=GROUP_ID,
-                message_id=msg_id,
-                text=text,
-                parse_mode="HTML",
-            )
-            log.info(f"Сообщение регистрации обновлено (ID: {msg_id})")
-        except Exception as e:
-            log.warning(f"Не удалось обновить сообщение: {e}. Отправляем новое.")
-            try:
-                sent = await bot.send_message(
-                    chat_id=GROUP_ID,
-                    message_thread_id=TOPIC_ID,
-                    text=text,
-                    parse_mode="HTML",
-                )
-                set_reg_message_id(sent.message_id)
-                log.info(f"Новое сообщение (ID: {sent.message_id})")
-            except Exception as e2:
-                log.error(f"Критическая ошибка: {e2}")
-    else:
-        try:
-            sent = await bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=TOPIC_ID,
-                text=text,
-                parse_mode="HTML",
-            )
-            set_reg_message_id(sent.message_id)
-            log.info(f"Первое сообщение регистрации (ID: {sent.message_id})")
-        except Exception as e:
-            log.error(f"Не удалось отправить сообщение: {e}")
+    await update_reg_message(bot, year)
 
     me = await bot.get_me()
     log.info(f"Бот @{me.username} запущен!")
@@ -188,7 +138,8 @@ async def main():
     # ПОРЯДОК ВАЖЕН
     dp.include_router(leave_router)
     dp.include_router(admin_router)   # admin первым — перехватывает /admin
-    dp.include_router(wipe_router)    # вайп командами /wipe /wipecanel /wipestatus
+    if wipe_router:
+        dp.include_router(wipe_router) # команды /wipe, /wipecanel, /wipestatus
     dp.include_router(start_router)
     dp.include_router(reg_router)     # последним
 
