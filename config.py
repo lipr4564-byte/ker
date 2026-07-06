@@ -27,7 +27,7 @@ SUPPORT_BOT = os.getenv("SUPPORT_BOT", "@SupportBot")
 PROJECT_CHANNEL = os.getenv("PROJECT_CHANNEL", "@ProjectChannel")
 
 # ===== ГОДЫ =====
-DATA_YEARS = [1936, 1939, 1941, 1991, 2001, 2014, 2022, 2025]
+DATA_YEARS = [1936, 1939, 1945, 1955, 1965, 1975, 1985, 1991, 1995, 2005, 2014, 2022, 2025, 2030]
 DEFAULT_YEAR = int(os.getenv("DEFAULT_YEAR", "1939"))
 
 # ===== ФАЙЛЫ =====
